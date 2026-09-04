@@ -1,0 +1,683 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { readFile, stat } from 'node:fs/promises'
+import { resolveCodexCommand } from '../commandResolution.js'
+import { getSpawnInvocation } from '../utils/commandInvocation.js'
+import { AccountAppServerProbe, type AccountProbeInspection } from './accountAppServerProbe.js'
+import {
+  AccountAuthStore,
+  AccountStoreError,
+  normalizeRateLimitPayload,
+  parseAccountCredential,
+  type AccountAuthStatus,
+  type StoredAccountEntry,
+  type StoredAccountsState,
+} from './accountAuthStore.js'
+import { classifyAccountAuthError, refreshChatgptAccountCredential, type ChatgptAuthTokensRefreshParams, type ChatgptAuthTokensRefreshResponse } from './accountTokenRefresh.js'
+
+const LOGIN_URL_TIMEOUT_MS = 15_000
+const LOGIN_CALLBACK_TIMEOUT_MS = 20_000
+const LOGIN_AUTH_FILE_TIMEOUT_MS = 10_000
+const ACCOUNT_INSPECTION_TIMEOUT_MS = 25_000
+const ACCOUNT_QUOTA_REFRESH_TTL_MS = 5 * 60_000
+
+export type RuntimeQuiescenceSnapshot = {
+  idle: boolean
+  activeTurnThreadIds: string[]
+  queuedThreadIds: string[]
+  pendingServerRequestCount: number
+  pendingTurnMutationCount: number
+}
+
+export type AccountRuntime = {
+  rpc(method: string, params: unknown): Promise<unknown>
+  dispose(): void
+  listPendingServerRequests(): unknown[]
+  getRuntimeQuiescenceSnapshot?(): Promise<RuntimeQuiescenceSnapshot>
+}
+
+export type LoginIntent = 'add' | 'reauth'
+
+type LoginSession = {
+  id: string
+  intent: LoginIntent
+  targetStorageId: string | null
+  home: string
+  proc: ChildProcessWithoutNullStreams
+  loginUrl: string | null
+  output: string
+  exited: boolean
+}
+
+type CoordinatorOperation = {
+  kind: 'login' | 'refresh' | 'switch' | 'remove'
+  startedAt: number
+  storageId: string | null
+}
+
+export class AccountCoordinatorError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly statusCode = 409,
+    public readonly details: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.name = 'AccountCoordinatorError'
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function publicAccount(entry: StoredAccountEntry, activeStorageId: string | null) {
+  return {
+    ...entry,
+    isActive: entry.storageId === activeStorageId,
+    canSwitch: entry.authStatus === 'ready' || entry.authStatus === 'stale' || entry.authStatus === 'transient_error',
+    actionRequired: entry.authStatus === 'reauth_required'
+      ? 'reauthenticate'
+      : entry.authStatus === 'payment_required'
+        ? 'resolve_payment'
+        : entry.authStatus === 'materialization_dirty'
+          ? 'repair_active_credential'
+          : null,
+  }
+}
+
+function sortAccounts(state: StoredAccountsState): StoredAccountEntry[] {
+  return [...state.accounts].sort((left, right) => {
+    if (left.storageId === state.activeStorageId) return -1
+    if (right.storageId === state.activeStorageId) return 1
+    return right.lastRefreshedAtIso.localeCompare(left.lastRefreshedAtIso)
+  })
+}
+
+function isLocalCallbackUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl)
+    return parsed.protocol === 'http:'
+      && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]' || parsed.hostname === '::1')
+  } catch {
+    return false
+  }
+}
+
+function extractLoginUrl(output: string): string | null {
+  return output.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?\S+/u)?.[0] ?? null
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() ? error.message : fallback
+}
+
+function threadContinuity(payload: unknown): {
+  threadId: string | null
+  cwd: string | null
+  rolloutPath: string | null
+  messageCount: number
+  lastMessageId: string | null
+} {
+  const response = asRecord(payload)
+  const thread = asRecord(response?.thread)
+  const turns = Array.isArray(thread?.turns) ? thread.turns : []
+  const items = turns.flatMap((turn) => {
+    const record = asRecord(turn)
+    return Array.isArray(record?.items) ? record.items : []
+  })
+  return {
+    threadId: readString(thread?.id),
+    cwd: readString(thread?.cwd),
+    rolloutPath: readString(thread?.rolloutPath ?? thread?.rollout_path),
+    messageCount: items.length,
+    lastMessageId: readString(asRecord(items.at(-1))?.id),
+  }
+}
+
+function sameContinuity(left: ReturnType<typeof threadContinuity>, right: ReturnType<typeof threadContinuity>): boolean {
+  return left.threadId === right.threadId
+    && left.cwd === right.cwd
+    && left.rolloutPath === right.rolloutPath
+    && left.messageCount === right.messageCount
+    && left.lastMessageId === right.lastMessageId
+}
+
+export class AccountAuthCoordinator {
+  private operation: CoordinatorOperation | null = null
+  private loginSession: LoginSession | null = null
+  private readonly refreshFlights = new Map<string, Promise<StoredAccountEntry>>()
+  private backgroundRefresh: Promise<void> | null = null
+
+  constructor(
+    readonly store: AccountAuthStore,
+    private readonly dependencies: {
+      spawnImpl?: typeof spawn
+      fetchImpl?: typeof fetch
+      createProbe?: (options: ConstructorParameters<typeof AccountAppServerProbe>[0]) => AccountAppServerProbe
+    } = {},
+  ) {}
+
+  async listAccounts(options: { scheduleRefresh?: boolean } = {}): Promise<{
+    activeAccountId: string | null
+    activeStorageId: string | null
+    operation: CoordinatorOperation | null
+    accounts: ReturnType<typeof publicAccount>[]
+  }> {
+    const state = await this.store.readState()
+    if (options.scheduleRefresh !== false) this.scheduleBackgroundRefresh(state)
+    return {
+      activeAccountId: state.activeAccountId,
+      activeStorageId: state.activeStorageId,
+      operation: this.operation,
+      accounts: sortAccounts(state).map((entry) => publicAccount(entry, state.activeStorageId)),
+    }
+  }
+
+  async importActiveCredential(): Promise<ReturnType<AccountAuthCoordinator['listAccounts']> extends Promise<infer T> ? T : never> {
+    return await this.withOperation('refresh', null, async () => {
+      const active = await this.store.readActiveCredential()
+      if (!active) throw new AccountCoordinatorError('invalid_auth_json', 'The active Codex credential is unavailable.', 400)
+      await this.store.upsertCredential(active.raw, { activate: true })
+      return await this.listAccounts({ scheduleRefresh: true })
+    })
+  }
+
+  async startLogin(input: { intent: LoginIntent; targetStorageId?: string | null }): Promise<{ loginSessionId: string; loginUrl: string }> {
+    if (this.operation || this.loginSession) {
+      throw new AccountCoordinatorError('account_operation_in_progress', 'Another account operation is already in progress.')
+    }
+    if (input.intent === 'reauth' && !input.targetStorageId) {
+      throw new AccountCoordinatorError('missing_target_account', 'Choose an account to re-authenticate.', 400)
+    }
+    if (input.targetStorageId) {
+      const state = await this.store.readState()
+      if (!state.accounts.some((entry) => entry.storageId === input.targetStorageId)) {
+        throw new AccountCoordinatorError('account_not_found', 'The selected account was not found.', 404)
+      }
+    }
+    this.operation = { kind: 'login', startedAt: Date.now(), storageId: input.targetStorageId ?? null }
+    const pending = await this.store.createPendingHome()
+    const command = resolveCodexCommand()
+    if (!command) {
+      this.operation = null
+      await this.store.removePendingHome(pending.loginSessionId)
+      throw new AccountCoordinatorError('codex_cli_missing', 'Codex CLI is not available.', 500)
+    }
+    const invocation = getSpawnInvocation(command, ['login', '-c', 'cli_auth_credentials_store="file"'])
+    const proc = (this.dependencies.spawnImpl ?? spawn)(invocation.command, invocation.args, {
+      env: { ...process.env, CODEX_HOME: pending.home },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    proc.stdin.end()
+    const session: LoginSession = {
+      id: pending.loginSessionId,
+      intent: input.intent,
+      targetStorageId: input.targetStorageId ?? null,
+      home: pending.home,
+      proc,
+      loginUrl: null,
+      output: '',
+      exited: false,
+    }
+    this.loginSession = session
+    const append = (chunk: Buffer | string) => {
+      if (this.loginSession !== session) return
+      session.output = `${session.output}${String(chunk)}`.slice(-16_000)
+      session.loginUrl = session.loginUrl ?? extractLoginUrl(session.output)
+    }
+    proc.stdout.on('data', append)
+    proc.stderr.on('data', append)
+    proc.once('exit', () => { session.exited = true })
+    proc.once('error', (error) => { session.exited = true; session.output += getErrorMessage(error, 'Login process failed.') })
+    try {
+      return { loginSessionId: session.id, loginUrl: await this.waitForLoginUrl(session) }
+    } catch (error) {
+      await this.cancelLogin(session.id)
+      throw error
+    }
+  }
+
+  async completeLogin(input: { loginSessionId: string; callbackUrl: string }, runtime?: AccountRuntime): Promise<{
+    outcome: 'added' | 'reauthenticated'
+    account: ReturnType<typeof publicAccount>
+    activeAccountId: string | null
+    activeStorageId: string | null
+    poolSize: number
+    accounts: ReturnType<typeof publicAccount>[]
+  }> {
+    const session = this.loginSession
+    if (!session || session.id !== input.loginSessionId || session.exited) {
+      throw new AccountCoordinatorError('login_not_running', 'The account login session is not running.')
+    }
+    if (!isLocalCallbackUrl(input.callbackUrl)) {
+      throw new AccountCoordinatorError('invalid_callback_url', 'The callback URL must use localhost.', 400)
+    }
+    try {
+      const before = await stat(`${session.home}/auth.json`).then((value) => value.mtimeMs).catch(() => null)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), LOGIN_CALLBACK_TIMEOUT_MS)
+      try {
+        const response = await (this.dependencies.fetchImpl ?? fetch)(input.callbackUrl, { redirect: 'manual', signal: controller.signal })
+        if (response.status >= 400) throw new Error(`Login callback returned HTTP ${String(response.status)}.`)
+      } finally {
+        clearTimeout(timer)
+      }
+      await this.waitForAuthFile(session.home, before)
+      let raw = await readFile(`${session.home}/auth.json`, 'utf8')
+      const parsed = parseAccountCredential(raw)
+      if (session.intent === 'reauth' && session.targetStorageId !== parsed.identity.storageId) {
+        throw new AccountCoordinatorError('account_identity_mismatch', 'The signed-in account does not match the selected account.', 409, { outcome: 'identity_mismatch' })
+      }
+      const probe = this.createProbe({
+        profileDir: session.home,
+        expectedAccountId: parsed.identity.accountId,
+        persistRefreshedCredential: async (nextRaw) => {
+          parseAccountCredential(nextRaw)
+          await this.store.atomicWrite(`${session.home}/auth.json`, nextRaw)
+          raw = nextRaw
+        },
+      })
+      const inspection = await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS)
+      raw = await readFile(`${session.home}/auth.json`, 'utf8')
+      const beforeState = await this.store.readState()
+      const wasActive = beforeState.activeStorageId === parsed.identity.storageId
+      if (wasActive && runtime) await this.assertRuntimeIdle(runtime)
+      const saved = await this.store.upsertCredential(raw, {
+        expectedStorageId: session.targetStorageId,
+        activate: wasActive,
+      })
+      await this.applyInspection(saved.account.storageId, inspection, wasActive ? 'ready' : undefined)
+      if (wasActive && runtime) {
+        runtime.dispose()
+        await runtime.rpc('account/read', { refreshToken: false })
+      }
+      const state = await this.store.readState()
+      const account = state.accounts.find((entry) => entry.storageId === saved.account.storageId) ?? saved.account
+      return {
+        outcome: saved.outcome,
+        account: publicAccount(account, state.activeStorageId),
+        activeAccountId: state.activeAccountId,
+        activeStorageId: state.activeStorageId,
+        poolSize: state.accounts.length,
+        accounts: sortAccounts(state).map((entry) => publicAccount(entry, state.activeStorageId)),
+      }
+    } finally {
+      await this.finishLoginSession(session)
+    }
+  }
+
+  async cancelLogin(loginSessionId: string): Promise<void> {
+    const session = this.loginSession
+    if (!session || session.id !== loginSessionId) return
+    await this.finishLoginSession(session)
+  }
+
+  async refreshAccount(storageId: string): Promise<StoredAccountEntry> {
+    const existing = this.refreshFlights.get(storageId)
+    if (existing) return await existing
+    const promise = this.withOperation('refresh', storageId, async () => {
+      const state = await this.store.readState()
+      const entry = state.accounts.find((item) => item.storageId === storageId)
+      if (!entry) throw new AccountCoordinatorError('account_not_found', 'The selected account was not found.', 404)
+      await this.patchAccount(storageId, { authStatus: 'refreshing', quotaStatus: 'loading', quotaError: null })
+      let revision = entry.credentialRevision
+      const probe = this.createProbe({
+        profileDir: `${this.store.accountsRoot}/${storageId}`,
+        expectedAccountId: entry.accountId,
+        persistRefreshedCredential: async (raw) => {
+          const saved = await this.store.upsertCredential(raw, { expectedStorageId: storageId, expectedRevision: revision })
+          revision = saved.account.credentialRevision
+        },
+      })
+      try {
+        const inspection = await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS)
+        return await this.applyInspection(storageId, inspection, 'ready')
+      } catch (error) {
+        const classified = classifyAccountAuthError(error)
+        return await this.patchAccount(storageId, {
+          authStatus: classified.authStatus,
+          unavailableReason: classified.unavailableReason,
+          quotaStatus: 'error',
+          quotaError: getErrorMessage(error, 'Failed to refresh account quota.'),
+          quotaUpdatedAtIso: new Date().toISOString(),
+        })
+      }
+    })
+    this.refreshFlights.set(storageId, promise)
+    try {
+      return await promise
+    } finally {
+      this.refreshFlights.delete(storageId)
+    }
+  }
+
+  async refreshActiveTokens(params: ChatgptAuthTokensRefreshParams): Promise<ChatgptAuthTokensRefreshResponse> {
+    return await this.withOperation('refresh', null, async () => {
+      const state = await this.store.readState()
+      const storageId = state.activeStorageId
+      const entry = storageId ? state.accounts.find((item) => item.storageId === storageId) ?? null : null
+      if (!storageId || !entry) throw new AccountCoordinatorError('account_not_found', 'No active account credential is available.', 404)
+      const credential = await this.store.readCredential(storageId, { requireRefreshToken: true })
+      try {
+        const refreshed = await refreshChatgptAccountCredential(credential.raw, params, {
+          fetchImpl: this.dependencies.fetchImpl,
+          expectedAccountId: entry.accountId,
+        })
+        const saved = await this.store.upsertCredential(refreshed.raw, {
+          expectedStorageId: storageId,
+          expectedRevision: entry.credentialRevision,
+          activate: true,
+        })
+        await this.patchAccount(storageId, {
+          authStatus: 'ready',
+          credentialRevision: saved.account.credentialRevision,
+          lastVerifiedAtIso: new Date().toISOString(),
+        })
+        return refreshed.response
+      } catch (error) {
+        const classified = classifyAccountAuthError(error)
+        await this.patchAccount(storageId, {
+          authStatus: classified.authStatus,
+          unavailableReason: classified.unavailableReason,
+        })
+        throw error
+      }
+    })
+  }
+
+  async switchAccount(input: {
+    storageId: string
+    expectedActiveStorageId?: string | null
+    resumeThreadId?: string | null
+  }, runtime: AccountRuntime): Promise<{
+    account: ReturnType<typeof publicAccount>
+    activeStorageId: string
+    workspaceContinuity: { checked: boolean; restored: boolean; threadId: string | null }
+  }> {
+    return await this.withOperation('switch', input.storageId, async () => {
+      const initial = await this.store.readState()
+      if (input.expectedActiveStorageId !== undefined && input.expectedActiveStorageId !== initial.activeStorageId) {
+        throw new AccountCoordinatorError('active_account_conflict', 'The active account changed in another browser.', 409)
+      }
+      const target = initial.accounts.find((entry) => entry.storageId === input.storageId)
+      if (!target) throw new AccountCoordinatorError('account_not_found', 'The selected account was not found.', 404)
+      if (target.storageId === initial.activeStorageId) {
+        return {
+          account: publicAccount(target, initial.activeStorageId),
+          activeStorageId: target.storageId,
+          workspaceContinuity: { checked: false, restored: true, threadId: input.resumeThreadId ?? null },
+        }
+      }
+      await this.assertRuntimeIdle(runtime)
+      let beforeThread: ReturnType<typeof threadContinuity> | null = null
+      if (input.resumeThreadId) {
+        beforeThread = threadContinuity(await runtime.rpc('thread/read', { threadId: input.resumeThreadId, includeTurns: true }))
+      }
+      if (initial.activeStorageId) {
+        const live = await this.store.readActiveCredential()
+        if (live && live.identity.storageId === initial.activeStorageId) {
+          const activeEntry = initial.accounts.find((entry) => entry.storageId === initial.activeStorageId)
+          await this.store.upsertCredential(live.raw, {
+            expectedStorageId: initial.activeStorageId,
+            expectedRevision: activeEntry?.credentialRevision,
+          })
+        }
+      }
+      const refreshedTarget = await this.refreshAccountOutsideOperation(target.storageId)
+      if (refreshedTarget.authStatus === 'reauth_required' || refreshedTarget.authStatus === 'payment_required') {
+        throw new AccountCoordinatorError('account_unavailable', 'The target account cannot be activated until its account issue is resolved.', 409)
+      }
+      const previousStorageId = initial.activeStorageId
+      const previousRaw = previousStorageId ? (await this.store.readCredential(previousStorageId)).raw : null
+      let materialized = false
+      try {
+        await this.store.materializeActive(target.storageId)
+        materialized = true
+        runtime.dispose()
+        await runtime.rpc('account/read', { refreshToken: false })
+        let afterThread: ReturnType<typeof threadContinuity> | null = null
+        if (input.resumeThreadId && beforeThread) {
+          try {
+            afterThread = threadContinuity(await runtime.rpc('thread/read', { threadId: input.resumeThreadId, includeTurns: true }))
+          } catch {
+            await runtime.rpc('thread/resume', { threadId: input.resumeThreadId })
+            afterThread = threadContinuity(await runtime.rpc('thread/read', { threadId: input.resumeThreadId, includeTurns: true }))
+          }
+          if (!sameContinuity(beforeThread, afterThread)) throw new Error('thread_continuity_mismatch')
+        }
+        const next = await this.store.updateState((state) => {
+          const now = new Date().toISOString()
+          const accounts = state.accounts.map((entry) => entry.storageId === target.storageId
+            ? { ...entry, authStatus: 'ready' as const, lastActivatedAtIso: now }
+            : entry)
+          const activated = accounts.find((entry) => entry.storageId === target.storageId) ?? target
+          const nextState = {
+            ...state,
+            operationEpoch: state.operationEpoch + 1,
+            activeStorageId: target.storageId,
+            activeAccountId: target.accountId,
+            accounts,
+          }
+          return { state: nextState, result: { state: nextState, activated } }
+        })
+        return {
+          account: publicAccount(next.activated, target.storageId),
+          activeStorageId: target.storageId,
+          workspaceContinuity: {
+            checked: Boolean(input.resumeThreadId),
+            restored: true,
+            threadId: input.resumeThreadId ?? null,
+          },
+        }
+      } catch (error) {
+        if (materialized) {
+          let rollbackSucceeded = false
+          try {
+            await this.store.restoreActive(previousRaw)
+            runtime.dispose()
+            await runtime.rpc('account/read', { refreshToken: false })
+            if (input.resumeThreadId && beforeThread) {
+              const restored = threadContinuity(await runtime.rpc('thread/read', { threadId: input.resumeThreadId, includeTurns: true }))
+              rollbackSucceeded = sameContinuity(beforeThread, restored)
+            } else {
+              rollbackSucceeded = true
+            }
+          } catch {
+            rollbackSucceeded = false
+          }
+          if (!rollbackSucceeded && previousStorageId) {
+            await this.patchAccount(previousStorageId, { authStatus: 'materialization_dirty' })
+          }
+          throw new AccountCoordinatorError(
+            rollbackSucceeded ? 'account_switch_failed_rolled_back' : 'account_switch_degraded',
+            rollbackSucceeded ? 'Account switch failed and the previous account was restored.' : 'Account switch failed and automatic recovery is incomplete.',
+            502,
+            { rollbackSucceeded },
+          )
+        }
+        throw error
+      }
+    })
+  }
+
+  async removeAccount(storageId: string): Promise<ReturnType<AccountAuthCoordinator['listAccounts']> extends Promise<infer T> ? T : never> {
+    return await this.withOperation('remove', storageId, async () => {
+      const state = await this.store.readState()
+      if (state.activeStorageId === storageId) {
+        throw new AccountCoordinatorError('active_account_remove_requires_switch', 'Switch to another account before removing the active account.', 409)
+      }
+      if (!state.accounts.some((entry) => entry.storageId === storageId)) {
+        throw new AccountCoordinatorError('account_not_found', 'The selected account was not found.', 404)
+      }
+      await this.store.removeCredential(storageId)
+      await this.store.updateState((current) => ({
+        state: { ...current, accounts: current.accounts.filter((entry) => entry.storageId !== storageId) },
+        result: undefined,
+      }))
+      return await this.listAccounts({ scheduleRefresh: true })
+    })
+  }
+
+  private createProbe(options: ConstructorParameters<typeof AccountAppServerProbe>[0]): AccountAppServerProbe {
+    return this.dependencies.createProbe?.(options) ?? new AccountAppServerProbe(options)
+  }
+
+  private async applyInspection(storageId: string, inspection: AccountProbeInspection, authStatus?: AccountAuthStatus): Promise<StoredAccountEntry> {
+    return await this.patchAccount(storageId, {
+      email: inspection.email ?? undefined,
+      planType: inspection.planType ?? undefined,
+      authStatus: authStatus ?? 'ready',
+      lastVerifiedAtIso: new Date().toISOString(),
+      quotaSnapshot: normalizeRateLimitPayload(inspection.rateLimits),
+      quotaUpdatedAtIso: new Date().toISOString(),
+      quotaStatus: 'ready',
+      quotaError: null,
+      unavailableReason: null,
+    })
+  }
+
+  private async patchAccount(storageId: string, patch: Partial<StoredAccountEntry>): Promise<StoredAccountEntry> {
+    return await this.store.updateState((state) => {
+      const current = state.accounts.find((entry) => entry.storageId === storageId)
+      if (!current) throw new AccountCoordinatorError('account_not_found', 'The selected account was not found.', 404)
+      const next = { ...current, ...patch }
+      return {
+        state: { ...state, accounts: state.accounts.map((entry) => entry.storageId === storageId ? next : entry) },
+        result: next,
+      }
+    })
+  }
+
+  private async refreshAccountOutsideOperation(storageId: string): Promise<StoredAccountEntry> {
+    const state = await this.store.readState()
+    const entry = state.accounts.find((item) => item.storageId === storageId)
+    if (!entry) throw new AccountCoordinatorError('account_not_found', 'The selected account was not found.', 404)
+    let revision = entry.credentialRevision
+    const probe = this.createProbe({
+      profileDir: `${this.store.accountsRoot}/${storageId}`,
+      expectedAccountId: entry.accountId,
+      persistRefreshedCredential: async (raw) => {
+        const saved = await this.store.upsertCredential(raw, { expectedStorageId: storageId, expectedRevision: revision })
+        revision = saved.account.credentialRevision
+      },
+    })
+    try {
+      return await this.applyInspection(storageId, await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS), 'ready')
+    } catch (error) {
+      const classified = classifyAccountAuthError(error)
+      await this.patchAccount(storageId, {
+        authStatus: classified.authStatus,
+        unavailableReason: classified.unavailableReason,
+        quotaStatus: 'error',
+        quotaError: getErrorMessage(error, 'Failed to validate the target account.'),
+      })
+      throw error
+    }
+  }
+
+  private scheduleBackgroundRefresh(state: StoredAccountsState): void {
+    if (this.backgroundRefresh || this.operation) return
+    const stale = state.accounts.filter((entry) => {
+      if (!entry.quotaUpdatedAtIso) return true
+      const updated = Date.parse(entry.quotaUpdatedAtIso)
+      return !Number.isFinite(updated) || Date.now() - updated >= ACCOUNT_QUOTA_REFRESH_TTL_MS
+    })
+    if (stale.length === 0) return
+    this.backgroundRefresh = (async () => {
+      for (const entry of stale) await this.refreshAccount(entry.storageId).catch(() => undefined)
+    })().finally(() => { this.backgroundRefresh = null })
+  }
+
+  private async assertRuntimeIdle(runtime: AccountRuntime): Promise<void> {
+    const snapshot = runtime.getRuntimeQuiescenceSnapshot
+      ? await runtime.getRuntimeQuiescenceSnapshot()
+      : {
+          idle: runtime.listPendingServerRequests().length === 0,
+          activeTurnThreadIds: [],
+          queuedThreadIds: [],
+          pendingServerRequestCount: runtime.listPendingServerRequests().length,
+          pendingTurnMutationCount: 0,
+        }
+    if (!snapshot.idle) {
+      throw new AccountCoordinatorError('account_switch_blocked', 'Finish active turns, queued messages, and pending requests before switching accounts.', 409, { quiescence: snapshot })
+    }
+  }
+
+  private async withOperation<T>(kind: CoordinatorOperation['kind'], storageId: string | null, run: () => Promise<T>): Promise<T> {
+    if (this.operation) throw new AccountCoordinatorError('account_operation_in_progress', 'Another account operation is already in progress.')
+    this.operation = { kind, storageId, startedAt: Date.now() }
+    const shortId = storageId?.slice(0, 8) ?? 'active'
+    const startedAt = Date.now()
+    try {
+      const result = await run()
+      console.info(`[accounts] operation=${kind} storage=${shortId} result=ok durationMs=${String(Date.now() - startedAt)}`)
+      return result
+    } catch (error) {
+      const code = error instanceof AccountCoordinatorError || error instanceof AccountStoreError ? error.code : 'failed'
+      console.warn(`[accounts] operation=${kind} storage=${shortId} result=${code} durationMs=${String(Date.now() - startedAt)}`)
+      throw error
+    } finally {
+      this.operation = null
+    }
+  }
+
+  private async waitForLoginUrl(session: LoginSession): Promise<string> {
+    const started = Date.now()
+    while (Date.now() - started < LOGIN_URL_TIMEOUT_MS) {
+      if (session.loginUrl) return session.loginUrl
+      if (session.exited) throw new AccountCoordinatorError('account_login_start_failed', 'Codex login exited before returning a login URL.', 500)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    throw new AccountCoordinatorError('account_login_start_failed', 'Timed out waiting for the Codex login URL.', 504)
+  }
+
+  private async waitForAuthFile(home: string, previousMtimeMs: number | null): Promise<void> {
+    const started = Date.now()
+    while (Date.now() - started < LOGIN_AUTH_FILE_TIMEOUT_MS) {
+      const next = await stat(`${home}/auth.json`).then((value) => value.mtimeMs).catch(() => null)
+      if (next !== null && (previousMtimeMs === null || next > previousMtimeMs)) return
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
+    throw new AccountCoordinatorError('account_login_complete_failed', 'Login completed without writing an account credential.', 504)
+  }
+
+  private async finishLoginSession(session: LoginSession): Promise<void> {
+    if (this.loginSession !== session) return
+    this.loginSession = null
+    try { if (!session.exited) session.proc.kill('SIGTERM') } catch {}
+    await this.store.removePendingHome(session.id)
+    this.operation = null
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    let timer: NodeJS.Timeout | null = null
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Account inspection timed out after ${String(timeoutMs)}ms.`)), timeoutMs)
+          timer.unref?.()
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+}
+
+const coordinators = new Map<string, AccountAuthCoordinator>()
+
+export function getAccountAuthCoordinator(): AccountAuthCoordinator {
+  const store = new AccountAuthStore()
+  const existing = coordinators.get(store.codexHome)
+  if (existing) return existing
+  const created = new AccountAuthCoordinator(store)
+  coordinators.set(store.codexHome, created)
+  return created
+}

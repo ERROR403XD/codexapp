@@ -1,0 +1,191 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AccountAppServerProbe, type AccountProbeInspection } from './accountAppServerProbe.js'
+import { AccountAuthCoordinator, type AccountRuntime } from './accountAuthCoordinator.js'
+import { AccountAuthStore } from './accountAuthStore.js'
+
+const homes: string[] = []
+
+function jwt(accountId: string, userId: string): string {
+  return `header.${Buffer.from(JSON.stringify({
+    'https://api.openai.com/profile': { email: `${userId}@example.test` },
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: accountId,
+      chatgpt_plan_type: 'plus',
+      user_id: userId,
+    },
+  })).toString('base64url')}.signature`
+}
+
+function credential(accountId: string, userId: string, refreshToken = `refresh-${accountId}`): string {
+  return JSON.stringify({
+    auth_mode: 'chatgpt',
+    tokens: { account_id: accountId, access_token: jwt(accountId, userId), refresh_token: refreshToken },
+  })
+}
+
+async function store(): Promise<AccountAuthStore> {
+  const home = await mkdtemp(join(tmpdir(), 'codexapp-coordinator-'))
+  homes.push(home)
+  return new AccountAuthStore(home)
+}
+
+function inspection(email = 'probe@example.test'): AccountProbeInspection {
+  return {
+    accountId: null,
+    email,
+    planType: 'plus',
+    rateLimits: { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1 } } },
+  }
+}
+
+function probeFactory(result: AccountProbeInspection = inspection()) {
+  return () => ({ inspect: vi.fn(async () => result), dispose: vi.fn() }) as unknown as AccountAppServerProbe
+}
+
+function runtime(options: { idle?: boolean; failAfterDispose?: boolean } = {}): AccountRuntime & { disposeCount: number } {
+  let disposed = false
+  return {
+    disposeCount: 0,
+    listPendingServerRequests: () => [],
+    getRuntimeQuiescenceSnapshot: async () => ({
+      idle: options.idle ?? true,
+      activeTurnThreadIds: options.idle === false ? ['thread-a'] : [],
+      queuedThreadIds: [],
+      pendingServerRequestCount: 0,
+      pendingTurnMutationCount: 0,
+    }),
+    dispose() { this.disposeCount += 1; disposed = true },
+    async rpc(method: string) {
+      if (method === 'account/read') {
+        if (disposed && options.failAfterDispose) {
+          options.failAfterDispose = false
+          throw new Error('injected_app_server_start_failure')
+        }
+        return { account: { email: 'runtime@example.test', planType: 'plus' } }
+      }
+      if (method === 'thread/read') {
+        return { thread: { id: 'thread-a', cwd: '/projects/a', rolloutPath: '/rollouts/a.jsonl', turns: [{ items: [{ id: 'message-a' }] }] } }
+      }
+      if (method === 'thread/resume') return { thread: { id: 'thread-a' } }
+      throw new Error(`unexpected method ${method}`)
+    },
+  }
+}
+
+afterEach(async () => {
+  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })))
+})
+
+describe('AccountAuthCoordinator', () => {
+  it('switches A to B transactionally and verifies thread continuity', async () => {
+    const authStore = await store()
+    const a = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    const b = await authStore.upsertCredential(credential('account-b', 'user-b'))
+    const coordinator = new AccountAuthCoordinator(authStore, { createProbe: probeFactory() })
+    const appServer = runtime()
+    const result = await coordinator.switchAccount({
+      storageId: b.account.storageId,
+      expectedActiveStorageId: a.account.storageId,
+      resumeThreadId: 'thread-a',
+    }, appServer)
+    expect(result.activeStorageId).toBe(b.account.storageId)
+    expect(result.workspaceContinuity).toEqual({ checked: true, restored: true, threadId: 'thread-a' })
+    expect((await authStore.readState()).activeStorageId).toBe(b.account.storageId)
+    expect((await authStore.readActiveCredential())?.identity.storageId).toBe(b.account.storageId)
+  })
+
+  it('rejects busy runtime and optimistic concurrency conflicts before materialization', async () => {
+    const authStore = await store()
+    const a = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    const b = await authStore.upsertCredential(credential('account-b', 'user-b'))
+    const coordinator = new AccountAuthCoordinator(authStore, { createProbe: probeFactory() })
+    await expect(coordinator.switchAccount({
+      storageId: b.account.storageId,
+      expectedActiveStorageId: 'stale-active-id',
+    }, runtime())).rejects.toMatchObject({ code: 'active_account_conflict' })
+    await expect(coordinator.switchAccount({
+      storageId: b.account.storageId,
+      expectedActiveStorageId: a.account.storageId,
+    }, runtime({ idle: false }))).rejects.toMatchObject({ code: 'account_switch_blocked' })
+    expect((await authStore.readActiveCredential())?.identity.storageId).toBe(a.account.storageId)
+  })
+
+  it('restores the previous account after a post-materialization failure', async () => {
+    const authStore = await store()
+    const a = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    const b = await authStore.upsertCredential(credential('account-b', 'user-b'))
+    const coordinator = new AccountAuthCoordinator(authStore, { createProbe: probeFactory() })
+    await expect(coordinator.switchAccount({
+      storageId: b.account.storageId,
+      expectedActiveStorageId: a.account.storageId,
+    }, runtime({ failAfterDispose: true }))).rejects.toMatchObject({
+      code: 'account_switch_failed_rolled_back',
+      details: { rollbackSucceeded: true },
+    })
+    expect((await authStore.readState()).activeStorageId).toBe(a.account.storageId)
+    expect((await authStore.readActiveCredential())?.identity.storageId).toBe(a.account.storageId)
+  })
+
+  it('persists active refresh-token rotation to the profile and materialized auth', async () => {
+    const authStore = await store()
+    const a = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      access_token: jwt('account-a', 'user-a'),
+      refresh_token: 'refresh-rotated',
+    }), { status: 200 }))
+    const coordinator = new AccountAuthCoordinator(authStore, { fetchImpl })
+    await coordinator.refreshActiveTokens({ previousAccountId: 'account-a' })
+    const profile = await authStore.readCredential(a.account.storageId)
+    const active = await authStore.readActiveCredential()
+    expect(profile.auth.tokens?.refresh_token).toBe('refresh-rotated')
+    expect(active?.auth.tokens?.refresh_token).toBe('refresh-rotated')
+    expect((await authStore.readState()).accounts[0]?.credentialRevision).toBe(2)
+  })
+
+  it('runs login in a pending home and adds a new identity without activating it', async () => {
+    const authStore = await store()
+    const active = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    let pendingHome = ''
+    const fakeSpawn = vi.fn((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+      pendingHome = options.env?.CODEX_HOME ?? ''
+      const proc = new EventEmitter() as EventEmitter & {
+        stdin: PassThrough
+        stdout: PassThrough
+        stderr: PassThrough
+        kill: () => boolean
+      }
+      proc.stdin = new PassThrough()
+      proc.stdout = new PassThrough()
+      proc.stderr = new PassThrough()
+      proc.kill = () => { proc.emit('exit', 0); return true }
+      queueMicrotask(() => proc.stdout.write('Open https://auth.openai.com/oauth/authorize?test=1\n'))
+      expect(command.length).toBeGreaterThan(0)
+      expect(args).toContain('cli_auth_credentials_store="file"')
+      return proc
+    })
+    const coordinator = new AccountAuthCoordinator(authStore, {
+      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: async () => {
+        await writeFile(join(pendingHome, 'auth.json'), credential('account-b', 'user-b'))
+        return new Response('', { status: 302 })
+      },
+      createProbe: probeFactory(inspection('user-b@example.test')),
+    })
+    const started = await coordinator.startLogin({ intent: 'add' })
+    expect(pendingHome).not.toBe(authStore.codexHome)
+    expect(pendingHome.startsWith(join(authStore.accountsRoot, '.pending'))).toBe(true)
+    const result = await coordinator.completeLogin({
+      loginSessionId: started.loginSessionId,
+      callbackUrl: 'http://localhost:1455/auth/callback?code=secret',
+    })
+    expect(result.outcome).toBe('added')
+    expect(result.poolSize).toBe(2)
+    expect(result.activeStorageId).toBe(active.account.storageId)
+    expect(result.account.isActive).toBe(false)
+  })
+})

@@ -410,9 +410,84 @@ export class AccountAuthStore {
     } catch {
       parsed = null
     }
-    const accounts = (Array.isArray(parsed?.accounts) ? parsed.accounts : [])
+    let accounts = (Array.isArray(parsed?.accounts) ? parsed.accounts : [])
       .map(normalizeEntry)
       .filter((entry): entry is StoredAccountEntry => entry !== null)
+    let discoveredCredentials = false
+    const accountsByStorageId = new Map(accounts.map((entry) => [entry.storageId, entry]))
+    for (const currentStorageId of await this.listCredentialStorageIds()) {
+      try {
+        const credentialPath = this.credentialPath(currentStorageId)
+        const credential = parseAccountCredential(await readFile(credentialPath, 'utf8'))
+        const nextStorageId = credential.identity.storageId
+        if (nextStorageId !== currentStorageId) {
+          const targetPath = join(this.accountsRoot, nextStorageId)
+          if (!await pathExists(targetPath)) {
+            await rename(join(this.accountsRoot, currentStorageId), targetPath)
+          } else {
+            const target = parseAccountCredential(await readFile(this.credentialPath(nextStorageId), 'utf8'))
+            if (target.identity.accountId !== credential.identity.accountId || target.identity.userId !== credential.identity.userId) {
+              continue
+            }
+            await rm(join(this.accountsRoot, currentStorageId), { recursive: true, force: true })
+          }
+        }
+        const existing = accountsByStorageId.get(nextStorageId)
+          ?? accounts.find((entry) => entry.accountId === credential.identity.accountId && entry.userId === credential.identity.userId)
+        const modifiedAt = (await stat(this.credentialPath(nextStorageId))).mtime.toISOString()
+        accountsByStorageId.delete(currentStorageId)
+        accountsByStorageId.set(nextStorageId, {
+          accountId: credential.identity.accountId,
+          storageId: nextStorageId,
+          userId: credential.identity.userId,
+          authMode: credential.identity.authMode,
+          email: credential.identity.email ?? existing?.email ?? null,
+          planType: credential.identity.planType ?? existing?.planType ?? null,
+          credentialRevision: Math.max(1, existing?.credentialRevision ?? 0),
+          authStatus: existing?.authStatus ?? 'ready',
+          lastRefreshedAtIso: existing?.lastRefreshedAtIso ?? modifiedAt,
+          lastVerifiedAtIso: existing?.lastVerifiedAtIso ?? null,
+          lastActivatedAtIso: existing?.lastActivatedAtIso ?? null,
+          quotaSnapshot: existing?.quotaSnapshot ?? null,
+          quotaUpdatedAtIso: existing?.quotaUpdatedAtIso ?? null,
+          quotaStatus: existing?.quotaStatus ?? 'idle',
+          quotaError: existing?.quotaError ?? null,
+          unavailableReason: existing?.unavailableReason ?? null,
+        })
+        if (!existing || nextStorageId !== currentStorageId) discoveredCredentials = true
+      } catch {
+        // Keep corrupt profiles out of the public account pool without deleting them.
+      }
+    }
+    accounts = Array.from(accountsByStorageId.values())
+    try {
+      const activeCredential = await this.readActiveCredential()
+      if (activeCredential && !accounts.some((entry) => entry.storageId === activeCredential.identity.storageId)) {
+        await this.writeCredential(activeCredential.identity.storageId, activeCredential.raw)
+        const now = new Date().toISOString()
+        accounts.push({
+          accountId: activeCredential.identity.accountId,
+          storageId: activeCredential.identity.storageId,
+          userId: activeCredential.identity.userId,
+          authMode: activeCredential.identity.authMode,
+          email: activeCredential.identity.email,
+          planType: activeCredential.identity.planType,
+          credentialRevision: 1,
+          authStatus: 'ready',
+          lastRefreshedAtIso: now,
+          lastVerifiedAtIso: null,
+          lastActivatedAtIso: now,
+          quotaSnapshot: null,
+          quotaUpdatedAtIso: null,
+          quotaStatus: 'idle',
+          quotaError: null,
+          unavailableReason: null,
+        })
+        discoveredCredentials = true
+      }
+    } catch {
+      // Invalid active auth remains untouched and is reported only when an operation needs it.
+    }
     const rawActiveStorageId = readString(parsed?.activeStorageId)
     let activeStorageId = rawActiveStorageId && accounts.some((entry) => entry.storageId === rawActiveStorageId)
       ? rawActiveStorageId
@@ -436,12 +511,12 @@ export class AccountAuthStore {
       activeStorageId: active?.storageId ?? null,
       accounts,
     }
-    const needsMigration = parsed !== null && (
+    const needsMigration = discoveredCredentials || (parsed !== null && (
       readNumber(parsed.schemaVersion) !== ACCOUNT_STATE_SCHEMA_VERSION
       || accounts.some((entry) => entry.credentialRevision === 0)
       || readString(parsed.activeAccountId) !== state.activeAccountId
       || rawActiveStorageId !== state.activeStorageId
-    )
+    ))
     if (needsMigration) {
       state.accounts = accounts.map((entry) => ({
         ...entry,

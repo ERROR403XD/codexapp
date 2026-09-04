@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -90,6 +90,26 @@ describe('AccountAuthStore', () => {
     expect(state.schemaVersion).toBe(ACCOUNT_STATE_SCHEMA_VERSION)
     expect(state.accounts[0]?.credentialRevision).toBe(1)
     expect(await readFile(store.credentialPath(parsed.identity.storageId), 'utf8')).toBe(raw)
+  })
+
+  it('migrates an account-id-only snapshot directory to the stable identity path', async () => {
+    const store = await createStore()
+    const raw = credential('account-a', 'user-a')
+    const legacyStorageId = accountStorageId('account-a', null)
+    const stableStorageId = accountStorageId('account-a', 'user-a')
+    await mkdir(join(store.accountsRoot, legacyStorageId), { recursive: true })
+    await writeFile(store.credentialPath(legacyStorageId), raw)
+    await writeFile(store.statePath, JSON.stringify({
+      activeAccountId: 'account-a',
+      activeStorageId: legacyStorageId,
+      accounts: [{ accountId: 'account-a', storageId: legacyStorageId, lastRefreshedAtIso: '2026-01-01T00:00:00.000Z' }],
+    }))
+    await writeFile(store.activeAuthPath, raw)
+
+    const state = await store.readState()
+    expect(state.activeStorageId).toBe(stableStorageId)
+    expect(await readFile(store.credentialPath(stableStorageId), 'utf8')).toBe(raw)
+    await expect(stat(join(store.accountsRoot, legacyStorageId))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('uses 0700 account directories and 0600 atomic credential files', async () => {
