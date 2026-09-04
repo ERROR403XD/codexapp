@@ -283,7 +283,7 @@ export class AccountAuthCoordinator {
           raw = nextRaw
         },
       })
-      const inspection = await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS)
+      const inspection = await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS, () => probe.dispose())
       raw = await readFile(`${session.home}/auth.json`, 'utf8')
       const beforeState = await this.store.readState()
       const wasActive = beforeState.activeStorageId === parsed.identity.storageId
@@ -336,7 +336,7 @@ export class AccountAuthCoordinator {
         },
       })
       try {
-        const inspection = await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS)
+        const inspection = await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS, () => probe.dispose())
         return await this.applyInspection(storageId, inspection, 'ready')
       } catch (error) {
         const classified = classifyAccountAuthError(error)
@@ -401,6 +401,7 @@ export class AccountAuthCoordinator {
     workspaceContinuity: { checked: boolean; restored: boolean; threadId: string | null }
   }> {
     return await this.withOperation('switch', input.storageId, async () => {
+      const switchStartedAt = Date.now()
       const initial = await this.store.readState()
       if (input.expectedActiveStorageId !== undefined && input.expectedActiveStorageId !== initial.activeStorageId) {
         throw new AccountCoordinatorError('active_account_conflict', 'The active account changed in another browser.', 409)
@@ -429,7 +430,9 @@ export class AccountAuthCoordinator {
           })
         }
       }
+      const preflightStartedAt = Date.now()
       const refreshedTarget = await this.refreshAccountOutsideOperation(target.storageId)
+      const preflightMs = Date.now() - preflightStartedAt
       if (refreshedTarget.authStatus === 'reauth_required' || refreshedTarget.authStatus === 'payment_required') {
         throw new AccountCoordinatorError('account_unavailable', 'The target account cannot be activated until its account issue is resolved.', 409)
       }
@@ -437,10 +440,13 @@ export class AccountAuthCoordinator {
       const previousRaw = previousStorageId ? (await this.store.readCredential(previousStorageId)).raw : null
       let materialized = false
       try {
+        const materializeStartedAt = Date.now()
         await this.store.materializeActive(target.storageId)
         materialized = true
         runtime.dispose()
         await runtime.rpc('account/read', { refreshToken: false })
+        const materializeRestartMs = Date.now() - materializeStartedAt
+        const continuityStartedAt = Date.now()
         let afterThread: ReturnType<typeof threadContinuity> | null = null
         if (input.resumeThreadId && beforeThread) {
           try {
@@ -451,6 +457,8 @@ export class AccountAuthCoordinator {
           }
           if (!sameContinuity(beforeThread, afterThread)) throw new Error('thread_continuity_mismatch')
         }
+        const continuityMs = Date.now() - continuityStartedAt
+        const commitStartedAt = Date.now()
         const next = await this.store.updateState((state) => {
           const now = new Date().toISOString()
           const accounts = state.accounts.map((entry) => entry.storageId === target.storageId
@@ -466,6 +474,10 @@ export class AccountAuthCoordinator {
           }
           return { state: nextState, result: { state: nextState, activated } }
         })
+        const commitMs = Date.now() - commitStartedAt
+        console.info(
+          `[accounts] switch_phases storage=${target.storageId.slice(0, 8)} preflightMs=${String(preflightMs)} materializeRestartMs=${String(materializeRestartMs)} continuityMs=${String(continuityMs)} commitMs=${String(commitMs)} totalMs=${String(Date.now() - switchStartedAt)}`,
+        )
         return {
           account: publicAccount(next.activated, target.storageId),
           activeStorageId: target.storageId,
@@ -568,7 +580,11 @@ export class AccountAuthCoordinator {
       },
     })
     try {
-      return await this.applyInspection(storageId, await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS), 'ready')
+      return await this.applyInspection(
+        storageId,
+        await this.withTimeout(probe.inspect(), ACCOUNT_INSPECTION_TIMEOUT_MS, () => probe.dispose()),
+        'ready',
+      )
     } catch (error) {
       const classified = classifyAccountAuthError(error)
       await this.patchAccount(storageId, {
@@ -655,13 +671,16 @@ export class AccountAuthCoordinator {
     this.operation = null
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout?: () => void | Promise<void>): Promise<T> {
     let timer: NodeJS.Timeout | null = null
     try {
       return await Promise.race([
         promise,
         new Promise<T>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`Account inspection timed out after ${String(timeoutMs)}ms.`)), timeoutMs)
+          timer = setTimeout(() => {
+            void Promise.resolve(onTimeout?.()).catch(() => undefined)
+            reject(new Error(`Account inspection timed out after ${String(timeoutMs)}ms.`))
+          }, timeoutMs)
           timer.unref?.()
         }),
       ])

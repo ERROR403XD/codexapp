@@ -47,6 +47,26 @@ function probeFactory(result: AccountProbeInspection = inspection()) {
   return () => ({ inspect: vi.fn(async () => result), dispose: vi.fn() }) as unknown as AccountAppServerProbe
 }
 
+function loginSpawn(onHome: (home: string) => void) {
+  return vi.fn((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+    onHome(options.env?.CODEX_HOME ?? '')
+    const proc = new EventEmitter() as EventEmitter & {
+      stdin: PassThrough
+      stdout: PassThrough
+      stderr: PassThrough
+      kill: () => boolean
+    }
+    proc.stdin = new PassThrough()
+    proc.stdout = new PassThrough()
+    proc.stderr = new PassThrough()
+    proc.kill = () => { proc.emit('exit', 0); return true }
+    queueMicrotask(() => proc.stdout.write('Open https://auth.openai.com/oauth/authorize?test=1\n'))
+    expect(command.length).toBeGreaterThan(0)
+    expect(args).toContain('cli_auth_credentials_store="file"')
+    return proc
+  })
+}
+
 function runtime(options: { idle?: boolean; failAfterDispose?: boolean } = {}): AccountRuntime & { disposeCount: number } {
   let disposed = false
   return {
@@ -97,6 +117,29 @@ describe('AccountAuthCoordinator', () => {
     expect(result.workspaceContinuity).toEqual({ checked: true, restored: true, threadId: 'thread-a' })
     expect((await authStore.readState()).activeStorageId).toBe(b.account.storageId)
     expect((await authStore.readActiveCredential())?.identity.storageId).toBe(b.account.storageId)
+  })
+
+  it('round-trips A to B to A without losing the selected thread', async () => {
+    const authStore = await store()
+    const a = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    const b = await authStore.upsertCredential(credential('account-b', 'user-b'))
+    const coordinator = new AccountAuthCoordinator(authStore, { createProbe: probeFactory() })
+    const appServer = runtime()
+
+    await coordinator.switchAccount({
+      storageId: b.account.storageId,
+      expectedActiveStorageId: a.account.storageId,
+      resumeThreadId: 'thread-a',
+    }, appServer)
+    const backToA = await coordinator.switchAccount({
+      storageId: a.account.storageId,
+      expectedActiveStorageId: b.account.storageId,
+      resumeThreadId: 'thread-a',
+    }, appServer)
+
+    expect(backToA.workspaceContinuity).toEqual({ checked: true, restored: true, threadId: 'thread-a' })
+    expect((await authStore.readState()).activeStorageId).toBe(a.account.storageId)
+    expect((await authStore.readActiveCredential())?.identity.storageId).toBe(a.account.storageId)
   })
 
   it('rejects busy runtime and optimistic concurrency conflicts before materialization', async () => {
@@ -151,23 +194,7 @@ describe('AccountAuthCoordinator', () => {
     const authStore = await store()
     const active = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
     let pendingHome = ''
-    const fakeSpawn = vi.fn((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
-      pendingHome = options.env?.CODEX_HOME ?? ''
-      const proc = new EventEmitter() as EventEmitter & {
-        stdin: PassThrough
-        stdout: PassThrough
-        stderr: PassThrough
-        kill: () => boolean
-      }
-      proc.stdin = new PassThrough()
-      proc.stdout = new PassThrough()
-      proc.stderr = new PassThrough()
-      proc.kill = () => { proc.emit('exit', 0); return true }
-      queueMicrotask(() => proc.stdout.write('Open https://auth.openai.com/oauth/authorize?test=1\n'))
-      expect(command.length).toBeGreaterThan(0)
-      expect(args).toContain('cli_auth_credentials_store="file"')
-      return proc
-    })
+    const fakeSpawn = loginSpawn((home) => { pendingHome = home })
     const coordinator = new AccountAuthCoordinator(authStore, {
       spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
       fetchImpl: async () => {
@@ -187,5 +214,60 @@ describe('AccountAuthCoordinator', () => {
     expect(result.poolSize).toBe(2)
     expect(result.activeStorageId).toBe(active.account.storageId)
     expect(result.account.isActive).toBe(false)
+  })
+
+  it('re-authenticates an existing identity in place without duplicating the pool', async () => {
+    const authStore = await store()
+    const active = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    let pendingHome = ''
+    const appServer = runtime()
+    const coordinator = new AccountAuthCoordinator(authStore, {
+      spawnImpl: loginSpawn((home) => { pendingHome = home }) as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: async () => {
+        await writeFile(join(pendingHome, 'auth.json'), credential('account-a', 'user-a', 'refresh-new'))
+        return new Response('', { status: 302 })
+      },
+      createProbe: probeFactory(inspection('user-a@example.test')),
+    })
+
+    const started = await coordinator.startLogin({ intent: 'add' })
+    const result = await coordinator.completeLogin({
+      loginSessionId: started.loginSessionId,
+      callbackUrl: 'http://localhost:1455/auth/callback?code=secret',
+    }, appServer)
+
+    expect(result.outcome).toBe('reauthenticated')
+    expect(result.poolSize).toBe(1)
+    expect(result.activeStorageId).toBe(active.account.storageId)
+    expect((await authStore.readCredential(active.account.storageId)).auth.tokens?.refresh_token).toBe('refresh-new')
+    expect(appServer.disposeCount).toBe(1)
+  })
+
+  it('rejects a targeted re-auth identity mismatch without writing either account', async () => {
+    const authStore = await store()
+    const a = await authStore.upsertCredential(credential('account-a', 'user-a'), { activate: true })
+    const b = await authStore.upsertCredential(credential('account-b', 'user-b'))
+    const beforeRevision = b.account.credentialRevision
+    let pendingHome = ''
+    const coordinator = new AccountAuthCoordinator(authStore, {
+      spawnImpl: loginSpawn((home) => { pendingHome = home }) as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: async () => {
+        await writeFile(join(pendingHome, 'auth.json'), credential('account-a', 'user-a', 'wrong-target'))
+        return new Response('', { status: 302 })
+      },
+      createProbe: probeFactory(),
+    })
+
+    const started = await coordinator.startLogin({ intent: 'reauth', targetStorageId: b.account.storageId })
+    await expect(coordinator.completeLogin({
+      loginSessionId: started.loginSessionId,
+      callbackUrl: 'http://localhost:1455/auth/callback?code=secret',
+    })).rejects.toMatchObject({ code: 'account_identity_mismatch' })
+
+    const state = await authStore.readState()
+    expect(state.accounts).toHaveLength(2)
+    expect(state.activeStorageId).toBe(a.account.storageId)
+    expect(state.accounts.find((entry) => entry.storageId === b.account.storageId)?.credentialRevision).toBe(beforeRevision)
+    expect((await authStore.readCredential(b.account.storageId)).auth.tokens?.refresh_token).toBe('refresh-account-b')
   })
 })

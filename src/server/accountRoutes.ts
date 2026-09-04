@@ -36,7 +36,12 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
     req.on('error', reject)
   })
   if (!raw) return {}
-  const parsed = asRecord(JSON.parse(raw))
+  let parsed: Record<string, unknown> | null = null
+  try {
+    parsed = asRecord(JSON.parse(raw))
+  } catch {
+    throw new AccountCoordinatorError('invalid_request', 'Expected valid JSON.', 400)
+  }
   if (!parsed) throw new AccountCoordinatorError('invalid_request', 'Expected a JSON object.', 400)
   return parsed
 }
