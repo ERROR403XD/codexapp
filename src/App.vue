@@ -146,14 +146,17 @@
                     <span>{{ accountActionError }}</span>
                     <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, accountActionError)">{{ t('Send feedback') }}</a>
                   </div>
+                  <div v-if="accountActionNotice" class="sidebar-settings-account-notice" role="status">
+                    {{ accountActionNotice }}
+                  </div>
                   <div class="sidebar-settings-account-login">
                     <button
                       class="sidebar-settings-account-login-button"
                       type="button"
                       :disabled="isRefreshingAccounts || isSwitchingAccounts || isStartingCodexLogin || isCompletingCodexLogin"
-                      @click="onStartCodexLogin"
+                      @click="onStartCodexLogin('add')"
                     >
-                      {{ isStartingCodexLogin ? t('Starting login…') : t('Login') }}
+                      {{ isStartingCodexLogin ? t('Starting login…') : t('Add account') }}
                     </button>
                     <a
                       v-if="codexLoginUrl"
@@ -165,8 +168,11 @@
                       {{ t('Open login URL') }}
                     </a>
                   </div>
+                  <p class="sidebar-settings-account-help">
+                    {{ t('Signing in adds or refreshes an account without switching the active quota source.') }}
+                  </p>
                   <p v-if="accounts.length === 0" class="sidebar-settings-account-empty">
-                    {{ t('Click Login, or run `codex login`, then click reload.') }}
+                    {{ t('No accounts yet. Add one from this panel.') }}
                   </p>
                   <div v-else class="sidebar-settings-account-list">
                   <article
@@ -176,6 +182,7 @@
                     :class="{
                       'is-active': account.isActive,
                       'is-unavailable': isAccountUnavailable(account),
+                      'is-warning': account.authStatus === 'stale' || account.authStatus === 'transient_error',
                       'is-confirming-remove': isRemoveConfirmationActive(account),
                       'is-remove-visible': isRemoveVisible(account),
                     }"
@@ -188,6 +195,9 @@
                       <p class="sidebar-settings-account-meta">
                         {{ formatAccountMeta(account) }}
                       </p>
+                      <span class="sidebar-settings-account-status" :data-status="account.authStatus">
+                        {{ formatAccountStatus(account) }}
+                      </span>
                       <p class="sidebar-settings-account-quota">
                         {{ formatAccountQuota(account) }}
                       </p>
@@ -197,9 +207,25 @@
                     </div>
                     <div class="sidebar-settings-account-actions">
                       <button
+                        class="sidebar-settings-account-secondary"
+                        type="button"
+                        :disabled="isAccountActionDisabled(account)"
+                        @click="onStartCodexLogin('reauth', account.storageId)"
+                      >
+                        {{ t('Re-authenticate') }}
+                      </button>
+                      <button
+                        class="sidebar-settings-account-secondary"
+                        type="button"
+                        :disabled="isAccountActionDisabled(account)"
+                        @click="onRefreshAccountQuota(account.storageId)"
+                      >
+                        {{ refreshingAccountId === account.storageId ? t('Refreshing…') : t('Refresh quota') }}
+                      </button>
+                      <button
                         class="sidebar-settings-account-switch"
                         type="button"
-                        :disabled="isAccountActionDisabled(account) || account.isActive || isAccountUnavailable(account)"
+                        :disabled="isAccountActionDisabled(account) || account.isActive || !account.canSwitch"
                         @click="onSwitchAccount(account.storageId)"
                       >
                         {{ getAccountSwitchLabel(account) }}
@@ -211,7 +237,7 @@
                           'is-confirming': isRemoveConfirmationActive(account),
                         }"
                         type="button"
-                        :disabled="isAccountActionDisabled(account)"
+                        :disabled="isAccountActionDisabled(account) || account.isActive"
                         @click="onRemoveAccount(account.storageId)"
                       >
                         {{ getAccountRemoveLabel(account) }}
@@ -941,6 +967,7 @@
                   @terminal-focus-change="onTerminalFocusChange"
                 />
                 <ThreadComposer ref="homeThreadComposerRef" :active-thread-id="composerThreadContextId"
+                  :disabled="isSwitchingAccounts"
                   :cwd="composerCwd"
                   :collaboration-modes="availableCollaborationModes"
                   :selected-collaboration-mode="selectedCollaborationMode"
@@ -1022,6 +1049,7 @@
                   <ThreadComposer
                     v-else
                     ref="threadComposerRef"
+                    :disabled="isSwitchingAccounts"
                     :active-thread-id="composerThreadContextId"
                     :cwd="composerCwd"
                     :collaboration-modes="availableCollaborationModes"
@@ -1109,7 +1137,7 @@
       @click.stop
     >
       <div class="codex-login-modal-header">
-        <h2 class="codex-login-modal-title">{{ t('Complete Codex login') }}</h2>
+        <h2 class="codex-login-modal-title">{{ loginIntent === 'reauth' ? t('Re-authenticate account') : t('Add account') }}</h2>
         <button
           class="codex-login-modal-close"
           type="button"
@@ -1122,6 +1150,9 @@
       </div>
       <p class="codex-login-modal-copy">
         {{ t('Finish login in the browser, then paste the localhost callback URL here.') }}
+      </p>
+      <p v-if="loginTargetAccount" class="codex-login-modal-copy">
+        {{ t('Expected account: {account}', { account: loginTargetAccount.email || shortAccountId(loginTargetAccount.accountId) }) }}
       </p>
       <a
         v-if="codexLoginUrl"
@@ -1191,6 +1222,7 @@ import { useUiLanguage } from './composables/useUiLanguage'
 import { useFeedbackDiagnostics } from './composables/useFeedbackDiagnostics'
 import {
   checkoutGitBranch,
+  cancelCodexLogin,
   cloneGithubRepository,
   configureTelegramBot,
   createPermanentWorktree,
@@ -1220,6 +1252,7 @@ import {
   persistFirstLaunchPluginsCardPreference,
   removeAccount,
   refreshAccountsFromAuth,
+  refreshAccountQuota,
   resetGitBranchToCommit,
   startCodexLogin,
   searchThreads,
@@ -1601,12 +1634,17 @@ const isStartingCodexLogin = ref(false)
 const isCompletingCodexLogin = ref(false)
 const isCodexLoginModalOpen = ref(false)
 const codexLoginUrl = ref('')
+const codexLoginSessionId = ref('')
 const codexLoginCallbackUrl = ref('')
+const loginIntent = ref<'add' | 'reauth'>('add')
+const loginTargetStorageId = ref('')
 const codexLoginCallbackInputRef = ref<HTMLInputElement | null>(null)
+const refreshingAccountId = ref('')
 const removingAccountId = ref('')
 const confirmingRemoveAccountId = ref('')
 const hoveredAccountId = ref('')
 const accountActionError = ref('')
+const accountActionNotice = ref('')
 const SEND_WITH_ENTER_KEY = 'codex-web-local.send-with-enter.v1'
 const IN_PROGRESS_SEND_MODE_KEY = 'codex-web-local.in-progress-send-mode.v1'
 const DARK_MODE_KEY = 'codex-web-local.dark-mode.v1'
@@ -1808,6 +1846,8 @@ const isAccountSwitchBlocked = computed(() =>
   isSelectedThreadInProgress.value ||
   selectedThreadServerRequests.value.length > 0,
 )
+const activeAccountStorageId = computed(() => accounts.value.find((account) => account.isActive)?.storageId ?? null)
+const loginTargetAccount = computed(() => accounts.value.find((account) => account.storageId === loginTargetStorageId.value) ?? null)
 
 function formatCompactTokenCount(value: number): string {
   if (!Number.isFinite(value)) return '0'
@@ -2473,12 +2513,27 @@ function isPaymentRequiredErrorMessage(value: string | null): boolean {
 }
 
 function isAccountUnavailable(account: UiAccountEntry): boolean {
-  return account.unavailableReason === 'payment_required' || isPaymentRequiredErrorMessage(account.quotaError)
+  return account.authStatus === 'reauth_required'
+    || account.authStatus === 'payment_required'
+    || account.authStatus === 'materialization_dirty'
+    || account.unavailableReason !== null
+    || isPaymentRequiredErrorMessage(account.quotaError)
 }
 
 function isAccountActionDisabled(account: UiAccountEntry): boolean {
-  return isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value || removingAccountId.value.length > 0
+  return isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value || refreshingAccountId.value.length > 0 || removingAccountId.value.length > 0
     || (account.isActive && removingAccountId.value !== account.storageId && isAccountSwitchBlocked.value)
+}
+
+function formatAccountStatus(account: UiAccountEntry): string {
+  if (account.authStatus === 'reauth_required') return t('Sign-in required')
+  if (account.authStatus === 'payment_required') return t('Payment required')
+  if (account.authStatus === 'refreshing') return t('Refreshing…')
+  if (account.authStatus === 'switching') return t('Switching…')
+  if (account.authStatus === 'stale') return t('Verification stale')
+  if (account.authStatus === 'transient_error') return t('Temporary error')
+  if (account.authStatus === 'materialization_dirty') return t('Recovery required')
+  return t('Ready')
 }
 
 function isRemoveConfirmationActive(account: UiAccountEntry): boolean {
@@ -2541,7 +2596,14 @@ function formatResetDateCompact(resetsAt: number | null): string {
 
 function formatAccountQuota(account: UiAccountEntry): string {
   if (isAccountUnavailable(account)) {
-    return account.quotaError || t('402 Payment Required')
+    if (account.quotaError) return account.quotaError
+    if (account.authStatus === 'payment_required' || account.unavailableReason === 'payment_required') {
+      return t('402 Payment Required')
+    }
+    if (account.authStatus === 'reauth_required' || account.unavailableReason === 'reauth_required') {
+      return t('Sign-in required')
+    }
+    return t('Recovery required')
   }
   const quota = account.quotaSnapshot
   const window = pickWeeklyQuotaWindow(account)
@@ -2601,11 +2663,12 @@ async function loadAccountsState(options: { silent?: boolean } = {}): Promise<vo
 async function onRefreshAccounts(): Promise<void> {
   if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value) return
   accountActionError.value = ''
+  accountActionNotice.value = ''
   hoveredAccountId.value = ''
   confirmingRemoveAccountId.value = ''
   isRefreshingAccounts.value = true
   try {
-    const result = await refreshAccountsFromAuth()
+    const result = await getAccounts()
     accounts.value = result.accounts
     stopPolling()
     startPolling()
@@ -2619,6 +2682,21 @@ async function onRefreshAccounts(): Promise<void> {
   }
 }
 
+async function onRefreshAccountQuota(storageId: string): Promise<void> {
+  if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value || refreshingAccountId.value) return
+  accountActionError.value = ''
+  accountActionNotice.value = ''
+  refreshingAccountId.value = storageId
+  try {
+    const result = await refreshAccountQuota(storageId)
+    accounts.value = result.accounts
+  } catch (error) {
+    accountActionError.value = error instanceof Error ? error.message : t('Failed to refresh account quota')
+  } finally {
+    refreshingAccountId.value = ''
+  }
+}
+
 async function onSwitchAccount(storageId: string): Promise<void> {
   if (isSwitchingAccounts.value || isRefreshingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value) return
   if (isAccountSwitchBlocked.value) {
@@ -2626,11 +2704,13 @@ async function onSwitchAccount(storageId: string): Promise<void> {
     return
   }
   accountActionError.value = ''
+  accountActionNotice.value = ''
   hoveredAccountId.value = ''
   confirmingRemoveAccountId.value = ''
   isSwitchingAccounts.value = true
   try {
-    const nextActiveAccount = await switchAccount(storageId)
+    const switched = await switchAccount(storageId, activeAccountStorageId.value, selectedThreadId.value || undefined)
+    const nextActiveAccount = switched.account
     accounts.value = accounts.value.map((account) => (
       account.storageId === storageId
         ? nextActiveAccount
@@ -2638,10 +2718,11 @@ async function onSwitchAccount(storageId: string): Promise<void> {
     ))
     stopPolling()
     startPolling()
-    void refreshAll({
+    await refreshAll({
       includeSelectedThreadMessages: true,
     })
-    void loadAccountsState({ silent: true })
+    await loadAccountsState({ silent: true })
+    accountActionNotice.value = t('Account switched. New requests use the selected account; the current project and conversation are unchanged.')
   } catch (error) {
     accountActionError.value = error instanceof Error ? error.message : t('Failed to switch account')
   } finally {
@@ -2649,16 +2730,20 @@ async function onSwitchAccount(storageId: string): Promise<void> {
   }
 }
 
-async function onStartCodexLogin(): Promise<void> {
+async function onStartCodexLogin(intent: 'add' | 'reauth', targetStorageId = ''): Promise<void> {
   if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value) return
   accountActionError.value = ''
+  accountActionNotice.value = ''
   codexLoginCallbackUrl.value = ''
+  loginIntent.value = intent
+  loginTargetStorageId.value = targetStorageId
   isStartingCodexLogin.value = true
   try {
-    const loginUrl = await startCodexLogin()
-    codexLoginUrl.value = loginUrl
+    const started = await startCodexLogin(intent, targetStorageId || undefined)
+    codexLoginUrl.value = started.loginUrl
+    codexLoginSessionId.value = started.loginSessionId
     isCodexLoginModalOpen.value = true
-    window.open(loginUrl, '_blank', 'noopener,noreferrer')
+    window.open(started.loginUrl, '_blank', 'noopener,noreferrer')
     await nextTick()
     codexLoginCallbackInputRef.value?.focus()
   } catch (error) {
@@ -2672,6 +2757,10 @@ function onCancelCodexLoginModal(): void {
   if (isCompletingCodexLogin.value) return
   isCodexLoginModalOpen.value = false
   codexLoginCallbackUrl.value = ''
+  const sessionId = codexLoginSessionId.value
+  codexLoginSessionId.value = ''
+  loginTargetStorageId.value = ''
+  if (sessionId) void cancelCodexLogin(sessionId)
 }
 
 async function onSubmitCodexLoginCallback(): Promise<void> {
@@ -2685,16 +2774,18 @@ async function completeCodexLoginFromCallback(callbackUrl: string): Promise<void
   accountActionError.value = ''
   isCompletingCodexLogin.value = true
   try {
-    const result = await completeCodexLogin(callbackUrl)
+    const result = await completeCodexLogin(codexLoginSessionId.value, callbackUrl)
     accounts.value = result.accounts
     codexLoginUrl.value = ''
+    codexLoginSessionId.value = ''
     codexLoginCallbackUrl.value = ''
     isCodexLoginModalOpen.value = false
     stopPolling()
     startPolling()
-    void refreshAll({
-      includeSelectedThreadMessages: true,
-    })
+    loginTargetStorageId.value = ''
+    accountActionNotice.value = result.outcome === 'added'
+      ? t('Account added. The active quota source did not change.')
+      : t('Account sign-in refreshed without adding a duplicate.')
   } catch (error) {
     accountActionError.value = error instanceof Error ? error.message : t('Failed to complete Codex login')
   } finally {
@@ -5693,6 +5784,10 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
   @apply mb-2 rounded-md bg-rose-50 px-2 py-1.5 text-xs text-rose-700;
 }
 
+.sidebar-settings-account-notice {
+  @apply mb-2 rounded-md bg-emerald-50 px-2 py-1.5 text-xs leading-4 text-emerald-700;
+}
+
 .sidebar-settings-account-refresh {
   @apply shrink-0 rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
 }
@@ -5711,6 +5806,10 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 
 .sidebar-settings-account-empty {
   @apply text-xs text-zinc-500;
+}
+
+.sidebar-settings-account-help {
+  @apply mb-2 text-[11px] leading-4 text-zinc-500;
 }
 
 .codex-login-modal-backdrop {
@@ -5811,12 +5910,16 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
   @apply border-rose-200 bg-rose-50;
 }
 
+.sidebar-settings-account-item.is-warning {
+  @apply border-amber-200 bg-amber-50;
+}
+
 .sidebar-settings-account-main {
   @apply min-w-0 flex-1;
 }
 
 .sidebar-settings-account-actions {
-  @apply flex w-24 shrink-0 flex-col items-end gap-1.5;
+  @apply flex w-28 shrink-0 flex-col items-stretch gap-1;
 }
 
 .sidebar-settings-account-email {
@@ -5825,6 +5928,21 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 
 .sidebar-settings-account-meta {
   @apply truncate text-[11px] text-zinc-500;
+}
+
+.sidebar-settings-account-status {
+  @apply mt-1 inline-flex rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700;
+}
+
+.sidebar-settings-account-status[data-status='reauth_required'],
+.sidebar-settings-account-status[data-status='payment_required'],
+.sidebar-settings-account-status[data-status='materialization_dirty'] {
+  @apply bg-rose-100 text-rose-700;
+}
+
+.sidebar-settings-account-status[data-status='stale'],
+.sidebar-settings-account-status[data-status='transient_error'] {
+  @apply bg-amber-100 text-amber-700;
 }
 
 .sidebar-settings-account-quota {
@@ -5845,6 +5963,10 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 
 .sidebar-settings-account-switch {
   @apply min-w-[4.75rem] shrink-0 rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-center text-xs text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
+}
+
+.sidebar-settings-account-secondary {
+  @apply shrink-0 rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-center text-[10px] leading-4 text-zinc-600 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
 }
 
 .sidebar-settings-account-remove {

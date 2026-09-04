@@ -296,7 +296,9 @@ export type UiProjectGroup = {
 }
 
 export type UiAccountQuotaStatus = 'idle' | 'loading' | 'ready' | 'error'
-export type UiAccountUnavailableReason = 'payment_required'
+export type UiAccountAuthStatus = 'ready' | 'refreshing' | 'switching' | 'reauth_required' | 'payment_required' | 'stale' | 'transient_error' | 'materialization_dirty'
+export type UiAccountUnavailableReason = 'payment_required' | 'reauth_required'
+export type UiAccountActionRequired = 'reauthenticate' | 'resolve_payment' | 'repair_active_credential'
 
 export type UiAccountEntry = {
   accountId: string
@@ -305,6 +307,9 @@ export type UiAccountEntry = {
   authMode: string | null
   email: string | null
   planType: string | null
+  credentialRevision: number
+  authStatus: UiAccountAuthStatus
+  lastVerifiedAtIso: string | null
   lastRefreshedAtIso: string
   lastActivatedAtIso: string | null
   quotaSnapshot: UiRateLimitSnapshot | null
@@ -312,6 +317,8 @@ export type UiAccountEntry = {
   quotaStatus: UiAccountQuotaStatus
   quotaError: string | null
   unavailableReason: UiAccountUnavailableReason | null
+  canSwitch: boolean
+  actionRequired: UiAccountActionRequired | null
   isActive: boolean
 }
 

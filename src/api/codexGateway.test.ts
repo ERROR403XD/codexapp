@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getAvailableModelIds, getThreadDetail, listDirectoryComposioConnectors, resumeThread, startThreadTurn } from './codexGateway'
+import {
+  completeCodexLogin,
+  getAccounts,
+  getAvailableModelIds,
+  getThreadDetail,
+  listDirectoryComposioConnectors,
+  resumeThread,
+  startCodexLogin,
+  startThreadTurn,
+  switchAccount,
+} from './codexGateway'
 
 function mockRpcFetch(): { requests: Array<{ method: string, params: Record<string, unknown> }> } {
   const requests: Array<{ method: string, params: Record<string, unknown> }> = []
@@ -172,6 +182,92 @@ describe('getAvailableModelIds', () => {
       includeProviderModels: true,
     })).resolves.toEqual(['gpt-5.5', 'gpt-5.4-mini'])
     expect(requests).toEqual(['/codex-api/provider-models', '/codex-api/rpc'])
+  })
+})
+
+describe('account coordinator gateway', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('normalizes versioned account state and action fields', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        activeAccountId: 'account-a',
+        activeStorageId: 'storage-a',
+        operation: { kind: 'refresh', storageId: 'storage-b', startedAt: 123 },
+        accounts: [{
+          accountId: 'account-a',
+          storageId: 'storage-a',
+          credentialRevision: 4,
+          authStatus: 'reauth_required',
+          quotaStatus: 'error',
+          unavailableReason: 'reauth_required',
+          actionRequired: 'reauthenticate',
+          canSwitch: false,
+        }],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    await expect(getAccounts()).resolves.toMatchObject({
+      activeStorageId: 'storage-a',
+      operation: { kind: 'refresh', storageId: 'storage-b', startedAt: 123 },
+      accounts: [{
+        storageId: 'storage-a',
+        credentialRevision: 4,
+        authStatus: 'reauth_required',
+        actionRequired: 'reauthenticate',
+        canSwitch: false,
+        isActive: true,
+      }],
+    })
+  })
+
+  it('keeps isolated login session identity in start and complete requests', async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+      requests.push({ url, body })
+      if (url.endsWith('/start')) {
+        return new Response(JSON.stringify({ data: { loginSessionId: 'session-1', loginUrl: 'https://auth.openai.com/oauth/authorize?test=1' } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ data: {
+        outcome: 'reauthenticated',
+        activeAccountId: 'account-a',
+        activeStorageId: 'storage-a',
+        poolSize: 1,
+        account: { accountId: 'account-a', storageId: 'storage-a', credentialRevision: 2, authStatus: 'ready' },
+        accounts: [{ accountId: 'account-a', storageId: 'storage-a', credentialRevision: 2, authStatus: 'ready' }],
+      } }), { status: 200 })
+    }))
+
+    await startCodexLogin('reauth', 'storage-a')
+    const completed = await completeCodexLogin('session-1', 'http://localhost:1455/auth/callback?code=fake')
+
+    expect(requests).toEqual([
+      { url: '/codex-api/accounts/login/start', body: { intent: 'reauth', targetStorageId: 'storage-a' } },
+      { url: '/codex-api/accounts/login/complete', body: { loginSessionId: 'session-1', callbackUrl: 'http://localhost:1455/auth/callback?code=fake' } },
+    ])
+    expect(completed).toMatchObject({ outcome: 'reauthenticated', poolSize: 1, activeStorageId: 'storage-a' })
+  })
+
+  it('sends optimistic active-account and thread continuity inputs when switching', async () => {
+    let requestBody: Record<string, unknown> = {}
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+      return new Response(JSON.stringify({ data: {
+        activeStorageId: 'storage-b',
+        account: { accountId: 'account-b', storageId: 'storage-b', credentialRevision: 1, authStatus: 'ready' },
+        workspaceContinuity: { checked: true, restored: true, threadId: 'thread-1' },
+      } }), { status: 200 })
+    }))
+
+    await expect(switchAccount('storage-b', 'storage-a', 'thread-1')).resolves.toMatchObject({
+      activeStorageId: 'storage-b',
+      workspaceContinuity: { checked: true, restored: true, threadId: 'thread-1' },
+    })
+    expect(requestBody).toEqual({ storageId: 'storage-b', expectedActiveStorageId: 'storage-a', resumeThreadId: 'thread-1' })
   })
 })
 
