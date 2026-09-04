@@ -1,6 +1,6 @@
 # CLI, Network, and Platform
 
-CLI startup, dev scripts, npx, Tailscale, Cloudflare tunnels, Windows, Android, Termux, and platform packaging behavior.
+CLI startup, dev scripts, npx, Tailscale, reverse proxies, Windows, Android, Termux, and platform packaging behavior.
 
 Return to the [manual test index](../../tests.md).
 
@@ -13,10 +13,9 @@ Return to the [manual test index](../../tests.md).
 | [CLI password output redaction](cli-password-output-redaction.md) |
 | [npx run dev compatibility shim](npx-run-dev-compatibility-shim.md) |
 | [Termux install without native PTY build](termux-install-without-native-pty-build.md) |
-| [Feature: Tailscale CIDRs bypass password and Cloudflare tunnel is opt-in](tailscale-cidrs-bypass-password-and-cloudflare-tunnel-is-opt-in.md) |
-| [Feature: Tunnel auto mode follows Tailscale IP detection](tunnel-auto-mode-follows-tailscale-ip-detection.md) |
+| [Feature: Tailscale CIDRs bypass password](tailscale-cidrs-bypass-password.md) |
+| [Feature: Strict port startup and no startup login](strict-port-and-no-startup-login.md) |
 | [Feature: Reverse tunnel login is required unless request is trusted local or Tailscale](reverse-tunnel-login-is-required-unless-request-is-trusted-local-or-tailscale.md) |
-| [Feature: Cloudflare tunnel QR omits password auto-login path](cloudflare-tunnel-qr-omits-password-auto-login-path.md) |
 | [Feature: Default runtime uses workspace-write sandbox with on-request approvals](default-runtime-uses-workspace-write-sandbox-with-on-request-approvals.md) |
 | [Feature: Windows npx install no longer depends on legacy PTY package](windows-npx-install-no-longer-depends-on-legacy-pty-package.md) |
 | [Feature: Default runtime uses unrestricted sandbox and no approvals](default-runtime-uses-unrestricted-sandbox-and-no-approvals.md) |

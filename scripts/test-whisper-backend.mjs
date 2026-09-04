@@ -30,7 +30,7 @@ async function run() {
 
   const server = spawn(
     'node',
-    ['dist-cli/index.js', '--port', String(port), '--no-password', '--no-tunnel', '--no-open'],
+    ['dist-cli/index.js', '--port', String(port), '--strict-port', '--no-password', '--no-open'],
     {
       cwd: rootDir,
       stdio: ['ignore', 'pipe', 'pipe'],

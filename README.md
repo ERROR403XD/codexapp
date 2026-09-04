@@ -43,20 +43,9 @@ npx codexapp
 # http://localhost:18923
 ```
 
-By default, `codexapp` now also starts:
+`codexapp` starts the web server without opening or proxying a Codex login flow. Add or re-authenticate ChatGPT accounts explicitly from the Accounts panel after the UI loads.
 
-```bash
-cloudflared tunnel --url http://localhost:<port>
-```
-
-It prints the tunnel URL, terminal QR code, and password together in startup output.  
-Use `--no-tunnel` to disable this behavior.
-
-If you are using a provider or AI gateway that is already authenticated and do not want `codexapp` to force `codex login` during startup, use:
-
-```bash
-npx codexapp --no-login
-```
+For deployments that must bind one exact port, pass `--strict-port`; startup fails instead of silently incrementing the port when the requested port is unavailable.
 
 ### Linux 🐧
 ```bash
@@ -97,7 +86,7 @@ If you want to use codexUI from iPhone or iPad Safari, serving it over HTTPS is 
 A practical private setup is to run codexUI locally and publish it inside your tailnet with Tailscale Serve:
 
 ```powershell
-npx codexapp --no-tunnel --port 5900
+npx codexapp --port 5900 --strict-port
 tailscale serve --bg 5900
 ```
 
@@ -132,7 +121,7 @@ Notes:
 - 🖥️ Browser-first Codex UI flow on `http://localhost:18923`
 - 🌐 LAN-friendly access from other devices on the same network
 - 🧪 Remote/headless-friendly setup for server-based Codex usage
-- 🔌 Works with reverse proxies and tunneling setups
+- 🔌 Works behind user-managed reverse proxies and private-network publishing tools
 - ⚡ No global install required for quick experimentation
 - 🎙️ Built-in hold-to-dictate voice input with transcription to composer draft
 - 🤖 Optional Telegram bot bridge: send messages to bot, forward into mapped thread, send assistant reply back to Telegram

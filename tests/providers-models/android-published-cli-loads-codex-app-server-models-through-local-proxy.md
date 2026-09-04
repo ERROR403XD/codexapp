@@ -11,7 +11,7 @@ Android `codexui-android` startup passes the bound server port to app-server fre
 
 #### Steps
 1. Start the package in Android proot:
-   `pnpm dlx codexui-android@<version> --port 17923 --no-open --no-tunnel --no-login`
+   `pnpm dlx codexui-android@<version> --port 17923 --strict-port --no-open`
 2. Open `http://127.0.0.1:17923/#/` in the browser.
 3. Call `POST /codex-api/rpc` with `{"method":"config/read","params":{}}`.
 4. Call `POST /codex-api/rpc` with `{"method":"model/list","params":{}}`.

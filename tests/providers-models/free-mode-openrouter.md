@@ -8,7 +8,7 @@ Toggle "Free mode" in settings to use free OpenRouter models without an OpenAI A
 - Codex CLI installed and available in PATH.
 
 #### Steps
-1. Start the server: `node dist-cli/index.js --no-tunnel --no-open --no-login`.
+1. Start the server: `node dist-cli/index.js --no-open`.
 2. Open the UI in a browser (default `http://localhost:5999`).
 3. Open the sidebar settings panel (gear icon).
 4. Toggle **Free mode (OpenRouter)** ON.

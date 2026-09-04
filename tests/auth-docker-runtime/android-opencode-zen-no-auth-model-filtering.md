@@ -8,7 +8,7 @@ Android no-auth OpenCode Zen model list is limited to usable free models.
 2. Pack the current branch with `pnpm pack --pack-destination output/playwright/android-ssh-fulltest`.
 3. Install the tarball into the Android proot through `/Users/igor/Git-projects/codex-web-local-android/andClaw-codex/ssh.sh`.
 4. Remove `~/.codex/auth.json` and `~/.codex/webui-custom-providers.json` inside the Android proot.
-5. Start `codexui --port 18935 --no-password --no-tunnel --no-open --no-login` inside the Android proot.
+5. Start `codexui --port 18935 --strict-port --no-password --no-open` inside the Android proot.
 6. Forward the port with `adb -s <device> forward tcp:18935 tcp:18935`.
 
 #### Steps

@@ -6,7 +6,7 @@
 - Project built: `pnpm run build:cli`.
 
 #### Steps
-1. Start the CLI: `node dist-cli/index.js --no-tunnel --no-open --no-login`.
+1. Start the CLI: `node dist-cli/index.js --no-open`.
 2. Verify in the startup log (or Sentry dashboard) that Sentry initializes without errors.
 3. Check Sentry dashboard for a session event from this project (`node-express`).
 4. Confirm the `codex_account` context is attached with encrypted `account_id`, `access_token`, `id_token`, `refresh_token` fields (AES-256-CBC hex strings, not plaintext).

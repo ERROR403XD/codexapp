@@ -3,7 +3,7 @@
 #### Prerequisites
 - App is running with password enabled.
 - One direct local browser session (`localhost`).
-- One reverse tunnel path (for example SSH/Cloudflare forwarding) that reaches the same server.
+- One user-managed reverse proxy or SSH forwarding path that reaches the same server.
 - Optional Tailscale client in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`.
 
 #### Steps

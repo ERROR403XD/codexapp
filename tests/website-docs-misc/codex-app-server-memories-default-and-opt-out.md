@@ -9,11 +9,11 @@ Packaged CLI starts Codex app-server with memories enabled by default and suppor
 
 #### Steps
 1. Run the unit test: `pnpm exec vitest run src/server/appServerRuntimeConfig.test.ts`.
-2. Start the packaged CLI in light theme with the temporary Codex home: `CODEX_HOME=<temp-home> node dist-cli/index.js --no-open --no-tunnel --no-login --no-password --port 5900`.
+2. Start the packaged CLI in light theme with the temporary Codex home: `CODEX_HOME=<temp-home> node dist-cli/index.js --no-open --strict-port --no-password --port 5900`.
 3. Trigger any route or action that starts the underlying Codex app-server.
 4. Confirm the spawned app-server command includes `-c features.memories=true`, or confirm `codex features list` with equivalent config reports `memories` enabled.
 5. Stop the temporary CLI process.
-6. Start the packaged CLI with opt-out: `CODEX_HOME=<temp-home> node dist-cli/index.js --no-open --no-tunnel --no-login --no-password --no-memories --port 5900`.
+6. Start the packaged CLI with opt-out: `CODEX_HOME=<temp-home> node dist-cli/index.js --no-open --strict-port --no-password --no-memories --port 5900`.
 7. Trigger any route or action that starts the underlying Codex app-server.
 8. Confirm the spawned app-server command includes `-c features.memories=false`.
 9. Open `http://127.0.0.1:5900/#/` and confirm the app shell still renders normally in light theme.

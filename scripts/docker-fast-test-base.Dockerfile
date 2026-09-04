@@ -18,4 +18,4 @@ RUN mkdir -p /codex-home /projects /imports
 WORKDIR /repo
 EXPOSE 4191
 
-CMD ["node", "/repo/dist-cli/index.js", "--port", "4191", "--no-password", "--no-open", "--no-tunnel", "--no-login"]
+CMD ["node", "/repo/dist-cli/index.js", "--port", "4191", "--strict-port", "--no-password", "--no-open"]

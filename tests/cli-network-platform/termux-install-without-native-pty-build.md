@@ -13,10 +13,10 @@ Android Termux installs can complete when `node-pty` has no compatible native bu
 #### Steps
 1. In Termux, run `npm i -g codexapp@latest` after the fixed version is published.
 2. Confirm installation does not fail if npm cannot build `node-pty` for `android-arm64`.
-3. Run `codexapp --no-login` in Termux.
+3. Run `codexapp` in Termux.
 4. Open the printed URL and confirm the app loads.
 5. Open a thread and confirm the integrated terminal reports unavailable instead of crashing the server if native PTY support is missing.
-6. On macOS or Linux, run `npm i -g codexapp@latest`, then start `codexapp --no-login`.
+6. On macOS or Linux, run `npm i -g codexapp@latest`, then start `codexapp`.
 7. Open a thread in light theme and confirm the integrated terminal still opens on the supported host.
 8. Switch to dark theme and confirm the integrated terminal remains readable.
 
