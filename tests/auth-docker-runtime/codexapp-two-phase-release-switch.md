@@ -8,7 +8,7 @@ Validate `scripts/codexapp-release-switch.sh`: prepare an immutable release whil
 
 - Production is `codexapp.service` on `127.0.0.1:5900` with `CODEX_HOME=/root/.codex`.
 - The candidate source is committed and has already passed its unit, build, packaged Docker, UI, and account acceptance checks on `59001`.
-- The real-account P6 request test has passed. A candidate with an unresolved upstream `401`, even if its account card says ready, must not be activated.
+- After adding or re-authenticating the test account, the operator explicitly clicked **Switch**, confirmed that account became active, and then passed the real-account P6 request. A ready card alone is not evidence that its credentials are active.
 - The operator has a host shell that does not depend on the CodexApp browser session being replaced.
 - No CodexApp turn, queued message, approval, account operation, or direct host Codex CLI task is running.
 - All CodexApp browser tabs are closed before `activate` or `rollback`, preventing automatic reconnect traffic during the authentication invariant check.
