@@ -20,3 +20,4 @@ Return to the [manual test index](../../tests.md).
 | [Android OpenCode Zen no-auth model filtering](android-opencode-zen-no-auth-model-filtering.md) |
 | [Docker auth promotion preserves legacy Zen threads](docker-auth-promotion-preserves-legacy-zen-threads.md) |
 | [Qodo provider/auth review fixes](qodo-provider-auth-review-fixes.md) |
+| [CodexApp two-phase release switch](codexapp-two-phase-release-switch.md) |
