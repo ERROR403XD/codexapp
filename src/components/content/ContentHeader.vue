@@ -1,5 +1,5 @@
 <template>
-  <header class="content-header">
+  <header ref="headerRef" class="content-header">
     <div class="content-leading" :class="{ 'is-accent': accent }">
       <slot name="leading" />
     </div>
@@ -11,6 +11,36 @@
 </template>
 
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+
+const headerRef = ref<HTMLElement | null>(null)
+let observer: ResizeObserver | null = null
+let contentRoot: HTMLElement | null = null
+let measureFrame = 0
+let measuredHeight = -1
+onMounted(() => {
+  const header = headerRef.value
+  if (!header) return
+  contentRoot = header.closest<HTMLElement>('.content-root')
+  const measure = () => {
+    measureFrame = 0
+    const height = header.getBoundingClientRect().height
+    if (Math.abs(height - measuredHeight) < 0.5) return
+    measuredHeight = height
+    contentRoot?.style.setProperty('--content-header-height', `${height}px`)
+  }
+  measure()
+  observer = new ResizeObserver(() => {
+    if (!measureFrame) measureFrame = requestAnimationFrame(measure)
+  })
+  observer.observe(header)
+})
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  cancelAnimationFrame(measureFrame)
+  contentRoot?.style.removeProperty('--content-header-height')
+})
+
 defineProps<{
   title: string
   accent?: boolean

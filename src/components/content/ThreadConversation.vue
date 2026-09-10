@@ -3,7 +3,7 @@
     <p v-if="isLoading" class="conversation-loading">Loading messages...</p>
 
     <p
-      v-else-if="messages.length === 0 && pendingRequests.length === 0 && !liveOverlay"
+      v-else-if="messages.length === 0 && pendingRequests.length === 0 && !liveOverlay && !hasMoreAbove"
       class="conversation-empty"
     >
       No messages in this thread yet.
@@ -19,10 +19,11 @@
         >
           {{ isLoadingMore || isLoadingPersistedAbove ? 'Loading…' : 'Load earlier messages' }}
         </button>
+        <p v-if="historyLoadError" class="history-load-error" role="alert">{{ t(historyLoadError) }}</p>
       </li>
-      <template v-for="message in visibleMessages" :key="message.id">
+      <template v-for="message in visibleMessages" :key="renderKey(message)">
       <li
-        v-if="!hiddenGroupedCommandIds.has(message.id) && !hiddenFileChangeMessageIds.has(message.id)"
+        v-if="!hiddenGroupedCommandIds.has(renderKey(message)) && !hiddenFileChangeMessageIds.has(renderKey(message))"
         class="conversation-item"
         :data-role="message.role"
         :data-message-type="message.messageType || ''"
@@ -38,7 +39,7 @@
             >
               <span class="cmd-chevron" :class="{ 'cmd-chevron-open': isCommandGroupExpanded(message) }">▶</span>
               <span class="cmd-group-label">{{ commandGroupSummaryLabel(message) }}</span>
-              <span class="cmd-status">{{ commandGroupSummaryStatus(message) }}</span>
+              <span class="cmd-status">{{ t(commandGroupSummaryStatus(message)) }}</span>
             </button>
             <div
               v-if="getGroupedCommandsForLatest(message).length > 0"
@@ -48,7 +49,7 @@
               <div class="cmd-group-inner">
                 <div
                   v-for="cmd in getCommandBlockForLatest(message)"
-                  :key="`grouped-cmd-${cmd.id}`"
+                  :key="`grouped-cmd-${renderKey(cmd)}`"
                   class="worked-cmd-item"
                 >
                   <button
@@ -65,7 +66,7 @@
                   >
                     <span class="cmd-chevron" :class="{ 'cmd-chevron-open': isCommandExpanded(cmd) }">▶</span>
                     <code class="cmd-label">{{ cmd.commandExecution?.command || '(command)' }}</code>
-                    <span class="cmd-status">{{ commandStatusLabel(cmd) }}</span>
+                    <span class="cmd-status">{{ t(commandStatusLabel(cmd)) }}</span>
                   </button>
                   <div
                     class="cmd-output-wrap"
@@ -97,7 +98,7 @@
               >
                 <span class="cmd-chevron" :class="{ 'cmd-chevron-open': isCommandExpanded(message) }">▶</span>
                 <code class="cmd-label">{{ message.commandExecution?.command || '(command)' }}</code>
-                <span class="cmd-status">{{ commandStatusLabel(message) }}</span>
+                <span class="cmd-status">{{ t(commandStatusLabel(message)) }}</span>
               </button>
               <div
                 class="cmd-output-wrap"
@@ -132,12 +133,12 @@
                 >
                   <span class="cmd-chevron" :class="{ 'cmd-chevron-open': isFileChangeSummaryExpanded(message) }">▶</span>
                   <span class="file-change-summary-label">
-                    {{ fileChangeSummaryLabel(readStandaloneFileChangeSummary(message)) }}
+                    {{ t(fileChangeSummaryLabel(readStandaloneFileChangeSummary(message))) }}
                   </span>
                   <span class="file-change-summary-status">
                     <span
                       v-for="part in fileChangeSummaryStatusParts(readStandaloneFileChangeSummary(message))"
-                      :key="`summary-status:${message.id}:${part.tone}:${part.label}`"
+                      :key="`summary-status:${renderKey(message)}:${part.tone}:${part.label}`"
                       class="file-change-signed-count"
                       :data-tone="part.tone"
                     >
@@ -150,11 +151,11 @@
                     <ul class="file-change-list">
                       <li
                         v-for="change in readStandaloneFileChangeSummary(message)?.changes ?? []"
-                        :key="`file-change:${message.id}:${change.path}:${change.movedToPath || ''}`"
+                        :key="`file-change:${renderKey(message)}:${change.path}:${change.movedToPath || ''}`"
                         class="file-change-item"
                       >
                         <span class="file-change-badge" :data-operation="fileChangeOperationTone(change)">
-                          {{ fileChangeOperationLabel(change) }}
+                          {{ t(fileChangeOperationLabel(change)) }}
                         </span>
                         <button
                           type="button"
@@ -177,7 +178,7 @@
                         <span v-if="change.addedLineCount > 0 || change.removedLineCount > 0" class="file-change-delta">
                           <span
                             v-for="part in fileChangeDeltaParts(change)"
-                            :key="`change-delta:${message.id}:${change.path}:${part.tone}:${part.label}`"
+                            :key="`change-delta:${renderKey(message)}:${change.path}:${part.tone}:${part.label}`"
                             class="file-change-signed-count"
                             :data-tone="part.tone"
                           >
@@ -188,21 +189,21 @@
                     </ul>
                     <div v-if="isFileChangeActionable(readStandaloneFileChangeSummary(message))" class="file-change-actions">
                       <p v-if="fileChangeActionErrorText(readStandaloneFileChangeSummary(message))" class="file-change-action-error">
-                        {{ fileChangeActionErrorText(readStandaloneFileChangeSummary(message)) }}
+                        {{ t(fileChangeActionErrorText(readStandaloneFileChangeSummary(message))) }}
                       </p>
                       <button
                         type="button"
                         class="file-change-action-button"
                         :disabled="fileChangeActionStatus(readStandaloneFileChangeSummary(message)) === 'undoing' || fileChangeActionStatus(readStandaloneFileChangeSummary(message)) === 'redoing'"
-                        :title="fileChangeNextAction(readStandaloneFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn'"
-                        :aria-label="fileChangeNextAction(readStandaloneFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn'"
+                        :title="t(fileChangeNextAction(readStandaloneFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn')"
+                        :aria-label="t(fileChangeNextAction(readStandaloneFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn')"
                         @click="runFileChangeAction(readStandaloneFileChangeSummary(message), fileChangeNextAction(readStandaloneFileChangeSummary(message)))"
                       >
                         <IconTablerArrowBackUp
                           class="icon-svg file-change-action-icon"
                           :class="{ 'file-change-action-icon-redo': fileChangeNextAction(readStandaloneFileChangeSummary(message)) === 'redo' }"
                         />
-                        {{ fileChangeActionLabel(readStandaloneFileChangeSummary(message)) }}
+                        {{ t(fileChangeActionLabel(readStandaloneFileChangeSummary(message))) }}
                       </button>
                     </div>
                   </div>
@@ -235,7 +236,7 @@
               </ul>
 
               <div v-if="message.fileAttachments && message.fileAttachments.length > 0" class="message-file-attachments">
-                <span v-for="att in message.fileAttachments" :key="`${message.id}:${att.path}`" class="message-file-chip">
+                <span v-for="att in message.fileAttachments" :key="`${renderKey(message)}:${att.path}`" class="message-file-chip">
                   <span class="message-file-chip-icon">📄</span>
                   <a
                     class="message-file-link message-file-chip-name"
@@ -252,7 +253,7 @@
               <div v-if="message.skills && message.skills.length > 0" class="message-skill-attachments">
                 <a
                   v-for="skill in message.skills"
-                  :key="`${message.id}:${skill.path}`"
+                  :key="`${renderKey(message)}:${skill.path}`"
                   class="message-skill-chip"
                   :href="toBrowseUrl(skill.path)"
                   :title="skill.path"
@@ -262,12 +263,28 @@
                 </a>
               </div>
 
-              <article v-if="message.text.length > 0" class="message-card" :data-role="message.role">
+              <AsyncQuestionCard
+                v-if="message.questions?.length && answerQuestions"
+                :key="`${activeThreadId}:${renderKey(message)}`"
+                :message="message"
+                :thread-id="activeThreadId"
+                :answered="answeredQuestionRefs.has(questionRefKey({ itemId: message.id, turnId: message.turnId ?? '', questionOrdinal: message.questionOrdinal }))"
+                :answer="answerQuestions"
+              />
+              <article v-else-if="message.text.length > 0" class="message-card" :data-role="message.role">
                 <div v-if="message.isAutomationRun" class="automation-message-label">
                   <span>Sent via automation</span>
                   <code v-if="message.automationDisplayName">{{ message.automationDisplayName }}</code>
+                  <time v-if="message.automationRun" :datetime="new Date(message.automationRun.startedAt).toISOString()" :title="formatLocalDateTime(message.automationRun.startedAt, { second: '2-digit' })">{{ formatLocalDateTime(message.automationRun.startedAt) }}</time>
                 </div>
-                <div v-if="message.messageType === 'worked'" class="worked-separator-wrap" aria-live="polite">
+                <SubtaskEventCard v-if="message.subtask" :event="message.subtask" @open-task="emit('openTask', $event)" />
+                <div v-else-if="message.compaction" class="thread-compaction-event" :data-status="message.compaction.status" role="status">
+                  <span>{{ t(message.text) }}</span>
+                  <small v-if="message.compaction.durationMs != null">{{ (message.compaction.durationMs / 1000).toFixed(1) }} {{ t('秒') }}</small>
+                  <p v-if="message.compaction.error" role="alert">{{ t(message.compaction.error) }}</p>
+                </div>
+                <details v-else-if="message.isUnhandled" class="model-tool-summary"><summary>{{ message.text }}</summary><p>{{ message.rawPayload }}</p></details>
+                <div v-else-if="message.messageType === 'worked'" class="worked-separator-wrap" aria-live="polite">
                   <button type="button" class="worked-separator" @click="toggleWorkedExpand(message)">
                     <span class="worked-separator-line" aria-hidden="true" />
                     <span class="worked-chevron" :class="{ 'worked-chevron-open': isWorkedExpanded(message) }">▶</span>
@@ -277,7 +294,7 @@
                   <div v-if="isWorkedExpanded(message)" class="worked-details">
                     <div
                       v-for="cmd in getCommandsForWorked(messages, messages.indexOf(message))"
-                      :key="`worked-cmd-${cmd.id}`"
+                      :key="`worked-cmd-${renderKey(cmd)}`"
                       class="worked-cmd-item"
                     >
                       <button
@@ -294,7 +311,7 @@
                       >
                         <span class="cmd-chevron" :class="{ 'cmd-chevron-open': isCommandExpanded(cmd) }">▶</span>
                         <code class="cmd-label">{{ cmd.commandExecution?.command || '(command)' }}</code>
-                        <span class="cmd-status">{{ commandStatusLabel(cmd) }}</span>
+                        <span class="cmd-status">{{ t(commandStatusLabel(cmd)) }}</span>
                       </button>
                       <div
                         class="cmd-output-wrap"
@@ -324,7 +341,7 @@
                   <ol v-if="readPlanSteps(message).length > 0" class="plan-step-list">
                     <li
                       v-for="(step, stepIndex) in readPlanSteps(message)"
-                      :key="`${message.id}:plan-step:${stepIndex}`"
+                      :key="`${renderKey(message)}:plan-step:${stepIndex}`"
                       class="plan-step-item"
                       :data-status="step.status"
                     >
@@ -346,7 +363,7 @@
                 <div
                   v-else
                   class="message-text-flow"
-                  v-memo="[message.id, message.text, props.cwd, highlightCacheVersion, markdownImageFailureVersion]"
+                  v-memo="[renderKey(message), message.text, props.cwd, highlightCacheVersion, markdownImageFailureVersion]"
                 >
                   <template v-for="(block, blockIndex) in getMessageBlocks(message)" :key="`block-${blockIndex}`">
                     <p v-if="block.kind === 'paragraph'" class="message-text">
@@ -570,11 +587,18 @@
                       </table>
                     </div>
                     <div v-else-if="block.kind === 'codeBlock'" class="message-code-block">
-                      <div v-if="block.language" class="message-code-language">{{ block.language }}</div>
+                      <div class="message-code-heading">
+                        <div class="message-code-language">{{ block.language }}</div>
+                        <AppButton
+                          class="message-code-copy"
+                          :data-copied="copiedCodeBlockKey === `${renderKey(message)}:${blockIndex}`"
+                          @click="copyCodeBlock(`${renderKey(message)}:${blockIndex}`, block.value)"
+                        >{{ copyFailureKey === `code:${renderKey(message)}:${blockIndex}` ? t('Copy failed') : copiedCodeBlockKey === `${renderKey(message)}:${blockIndex}` ? t('Copied') : t('Copy code') }}</AppButton>
+                      </div>
                       <pre class="message-code-pre"><code class="hljs" v-html="renderCachedHighlightedCodeAsHtml(block.language, block.value)"></code></pre>
                     </div>
                     <hr v-else-if="block.kind === 'thematicBreak'" class="message-divider" />
-                    <p v-else-if="isMarkdownImageFailed(message.id, blockIndex)" class="message-text">{{ block.markdown }}</p>
+                    <p v-else-if="isMarkdownImageFailed(renderKey(message), blockIndex)" class="message-text">{{ block.markdown }}</p>
                     <button
                       v-else
                       class="message-image-button"
@@ -586,7 +610,7 @@
                         :src="block.url"
                         :alt="block.alt || 'Embedded message image'"
                         loading="lazy"
-                        @error="onMarkdownImageError(message.id, blockIndex)"
+                        @error="onMarkdownImageError(renderKey(message), blockIndex)"
                       />
                     </button>
                   </template>
@@ -610,12 +634,12 @@
                 >
                   <span class="cmd-chevron" :class="{ 'cmd-chevron-open': isFileChangeSummaryExpanded(message) }">▶</span>
                   <span class="file-change-summary-label">
-                    {{ fileChangeSummaryLabel(readAnchoredFileChangeSummary(message)) }}
+                    {{ t(fileChangeSummaryLabel(readAnchoredFileChangeSummary(message))) }}
                   </span>
                   <span class="file-change-summary-status">
                     <span
                       v-for="part in fileChangeSummaryStatusParts(readAnchoredFileChangeSummary(message))"
-                      :key="`summary-status:${message.id}:${part.tone}:${part.label}`"
+                      :key="`summary-status:${renderKey(message)}:${part.tone}:${part.label}`"
                       class="file-change-signed-count"
                       :data-tone="part.tone"
                     >
@@ -628,11 +652,11 @@
                     <ul class="file-change-list">
                       <li
                         v-for="change in readAnchoredFileChangeSummary(message)?.changes ?? []"
-                        :key="`file-change:inline:${message.id}:${change.path}:${change.movedToPath || ''}`"
+                        :key="`file-change:inline:${renderKey(message)}:${change.path}:${change.movedToPath || ''}`"
                         class="file-change-item"
                       >
                         <span class="file-change-badge" :data-operation="fileChangeOperationTone(change)">
-                          {{ fileChangeOperationLabel(change) }}
+                          {{ t(fileChangeOperationLabel(change)) }}
                         </span>
                         <button
                           type="button"
@@ -655,7 +679,7 @@
                         <span v-if="change.addedLineCount > 0 || change.removedLineCount > 0" class="file-change-delta">
                           <span
                             v-for="part in fileChangeDeltaParts(change)"
-                            :key="`change-delta:inline:${message.id}:${change.path}:${part.tone}:${part.label}`"
+                            :key="`change-delta:inline:${renderKey(message)}:${change.path}:${part.tone}:${part.label}`"
                             class="file-change-signed-count"
                             :data-tone="part.tone"
                           >
@@ -666,21 +690,21 @@
                     </ul>
                     <div v-if="isFileChangeActionable(readAnchoredFileChangeSummary(message))" class="file-change-actions">
                       <p v-if="fileChangeActionErrorText(readAnchoredFileChangeSummary(message))" class="file-change-action-error">
-                        {{ fileChangeActionErrorText(readAnchoredFileChangeSummary(message)) }}
+                        {{ t(fileChangeActionErrorText(readAnchoredFileChangeSummary(message))) }}
                       </p>
                       <button
                         type="button"
                         class="file-change-action-button"
                         :disabled="fileChangeActionStatus(readAnchoredFileChangeSummary(message)) === 'undoing' || fileChangeActionStatus(readAnchoredFileChangeSummary(message)) === 'redoing'"
-                        :title="fileChangeNextAction(readAnchoredFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn'"
-                        :aria-label="fileChangeNextAction(readAnchoredFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn'"
+                        :title="t(fileChangeNextAction(readAnchoredFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn')"
+                        :aria-label="t(fileChangeNextAction(readAnchoredFileChangeSummary(message)) === 'redo' ? 'Redo file changes from this turn' : 'Undo file changes from this turn')"
                         @click="runFileChangeAction(readAnchoredFileChangeSummary(message), fileChangeNextAction(readAnchoredFileChangeSummary(message)))"
                       >
                         <IconTablerArrowBackUp
                           class="icon-svg file-change-action-icon"
                           :class="{ 'file-change-action-icon-redo': fileChangeNextAction(readAnchoredFileChangeSummary(message)) === 'redo' }"
                         />
-                        {{ fileChangeActionLabel(readAnchoredFileChangeSummary(message)) }}
+                        {{ t(fileChangeActionLabel(readAnchoredFileChangeSummary(message))) }}
                       </button>
                     </div>
                   </div>
@@ -698,7 +722,7 @@
                   class="message-edit-button"
                   aria-label="Edit this message"
                   title="Edit this message"
-                  @click="editMessage(message.id)"
+                  @click="editMessage(renderKey(message))"
                 >
                   <IconTablerFilePencil class="icon-svg message-edit-icon" />
                   <span class="message-edit-label">Edit message</span>
@@ -709,7 +733,7 @@
                   class="message-fork-button"
                   aria-label="Fork thread from this response"
                   title="Fork thread from this response"
-                  @click="forkResponse(message.id)"
+                  @click="forkResponse(renderKey(message))"
                 >
                   <IconTablerGitFork class="icon-svg message-fork-icon" />
                   <span class="message-fork-label">Fork</span>
@@ -718,13 +742,13 @@
                   v-if="showCopyResponseButton(message)"
                   type="button"
                   class="message-copy-button"
-                  :data-copied="copiedResponseAnchorId === message.id"
-                  :aria-label="copiedResponseAnchorId === message.id ? 'Response copied' : 'Copy response'"
-                  :title="copiedResponseAnchorId === message.id ? 'Response copied' : 'Copy response'"
-                  @click="copyResponse(message.id)"
+                  :data-copied="copiedResponseAnchorId === renderKey(message)"
+                  :aria-label="copiedResponseAnchorId === renderKey(message) ? 'Response copied' : 'Copy response'"
+                  :title="copiedResponseAnchorId === renderKey(message) ? 'Response copied' : 'Copy response'"
+                  @click="copyResponse(renderKey(message))"
                 >
                   <IconTablerCopy class="icon-svg message-copy-icon" />
-                  <span class="message-copy-label">{{ copiedResponseAnchorId === message.id ? 'Copied' : 'Copy' }}</span>
+                  <span class="message-copy-label">{{ copyFailureKey === `response:${renderKey(message)}` ? t('Copy failed') : copiedResponseAnchorId === renderKey(message) ? t('Copied') : t('Copy') }}</span>
                 </button>
               </div>
             </article>
@@ -736,7 +760,7 @@
         <div class="message-row">
           <div class="message-stack">
             <article class="live-overlay-inline" aria-live="polite">
-              <p class="live-overlay-label">{{ liveOverlay.activityLabel }}</p>
+              <p class="live-overlay-label">{{ t(liveOverlay.activityLabel) }}</p>
               <p
                 v-if="liveOverlay.reasoningText"
                 class="live-overlay-reasoning"
@@ -744,7 +768,7 @@
                 {{ liveOverlay.reasoningText }}
               </p>
               <div v-if="liveOverlay.errorText" class="live-overlay-error">
-                <span>{{ liveOverlay.errorText }}</span>
+                <span>{{ t(liveOverlay.errorText) }}</span>
                 <a class="live-overlay-feedback" :href="feedbackMailto" @click="prepareLiveErrorFeedback($event, liveOverlay.errorText)">Send feedback</a>
               </div>
             </article>
@@ -814,7 +838,7 @@
               @click="selectDiffViewerChange(change)"
             >
               <span class="file-change-badge" :data-operation="fileChangeOperationTone(change)">
-                {{ fileChangeOperationLabel(change) }}
+                {{ t(fileChangeOperationLabel(change)) }}
               </span>
               <span class="diff-viewer-file-label">
                 {{ displayFileChangePath(change.path) }}
@@ -833,7 +857,7 @@
                 <template v-if="activeDiffViewerChange.movedToPath"> → {{ displayFileChangePath(activeDiffViewerChange.movedToPath) }}</template>
               </p>
               <p class="diff-viewer-subtitle">
-                {{ fileChangeOperationLabel(activeDiffViewerChange) }}
+                {{ t(fileChangeOperationLabel(activeDiffViewerChange)) }}
                 <span v-if="formatFileChangeDelta(activeDiffViewerChange)"> · {{ formatFileChangeDelta(activeDiffViewerChange) }}</span>
               </p>
             </div>
@@ -899,7 +923,7 @@
                   @click="selectDiffViewerChange(change)"
                 >
                   <span class="file-change-badge" :data-operation="fileChangeOperationTone(change)">
-                    {{ fileChangeOperationLabel(change) }}
+                    {{ t(fileChangeOperationLabel(change)) }}
                   </span>
                   <span class="diff-viewer-file-label">
                     {{ displayFileChangePath(change.path) }}
@@ -917,12 +941,19 @@
 </template>
 
 <script setup lang="ts">
+import { messageRenderKey } from '../../messageIdentity'
+import SubtaskEventCard from './SubtaskEventCard.vue'
+import AsyncQuestionCard from './AsyncQuestionCard.vue'
+import { questionRefKey, type AsyncQuestionReply } from '../../userQuestions'
+import { formatLocalDateTime } from '../../dateTime'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { UiFileChange, UiLiveOverlay, UiMessage, UiPlanStep, UiServerRequest } from '../../types/codex'
 import { updateThreadFileChanges } from '../../api/codexGateway'
 import { useFeedbackDiagnostics } from '../../composables/useFeedbackDiagnostics'
 import { useMobile } from '../../composables/useMobile'
-import { copyTextToClipboard, copyTextWithSelectionFallback } from '../../utils/clipboard'
+import { useUiLanguage } from '../../composables/useUiLanguage'
+import { copyTextToClipboard } from '../../utils/clipboard'
+import AppButton from '../common/AppButton.vue'
 
 import IconTablerArrowBackUp from '../icons/IconTablerArrowBackUp.vue'
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
@@ -1069,7 +1100,7 @@ const activeCommandMessageId = computed(() => {
   for (let index = props.messages.length - 1; index >= 0; index -= 1) {
     const message = props.messages[index]
     if (message.messageType === 'commandExecution' && message.commandExecution?.status === 'inProgress') {
-      return message.id
+      return renderKey(message)
     }
   }
   return ''
@@ -1104,7 +1135,7 @@ const groupedCommandsByLatestId = computed<Record<string, UiMessage[]>>(() => {
 
     if (block.length <= 1) continue
     const latest = block[block.length - 1]
-    next[latest.id] = block.slice(0, -1)
+    next[renderKey(latest)] = block.slice(0, -1)
   }
   return next
 })
@@ -1113,7 +1144,7 @@ const hiddenGroupedCommandIds = computed(() => {
   const next = new Set<string>()
   for (const commands of Object.values(groupedCommandsByLatestId.value)) {
     for (const command of commands) {
-      next.add(command.id)
+      next.add(renderKey(command))
     }
   }
   return next
@@ -1139,13 +1170,13 @@ function planStepStatusIcon(status: UiPlanStep['status']): string {
 }
 
 function isCommandAutoExpanded(message: UiMessage): boolean {
-  return !hasLiveAssistantText.value && message.id === activeCommandMessageId.value
+  return !hasLiveAssistantText.value && renderKey(message) === activeCommandMessageId.value
 }
 
 function isCommandExpanded(message: UiMessage): boolean {
   if (!isCommandMessage(message)) return false
-  return expandedCommandIds.value.has(message.id)
-    || (!collapsedAutoCommandIds.value.has(message.id) && isCommandAutoExpanded(message))
+  return expandedCommandIds.value.has(renderKey(message))
+    || (!collapsedAutoCommandIds.value.has(renderKey(message)) && isCommandAutoExpanded(message))
 }
 
 function isCommandCompact(message: UiMessage): boolean {
@@ -1162,16 +1193,16 @@ function toggleCommandExpand(message: UiMessage): void {
   const nextExpanded = new Set(expandedCommandIds.value)
   const nextCollapsedAuto = new Set(collapsedAutoCommandIds.value)
   const isAutoExpanded = isCommandAutoExpanded(message)
-  const isManuallyExpanded = nextExpanded.has(message.id)
+  const isManuallyExpanded = nextExpanded.has(renderKey(message))
 
   if (isManuallyExpanded) {
-    nextExpanded.delete(message.id)
-    if (isAutoExpanded) nextCollapsedAuto.add(message.id)
-  } else if (isAutoExpanded && !nextCollapsedAuto.has(message.id)) {
-    nextCollapsedAuto.add(message.id)
+    nextExpanded.delete(renderKey(message))
+    if (isAutoExpanded) nextCollapsedAuto.add(renderKey(message))
+  } else if (isAutoExpanded && !nextCollapsedAuto.has(renderKey(message))) {
+    nextCollapsedAuto.add(renderKey(message))
   } else {
-    nextExpanded.add(message.id)
-    nextCollapsedAuto.delete(message.id)
+    nextExpanded.add(renderKey(message))
+    nextCollapsedAuto.delete(renderKey(message))
   }
 
   expandedCommandIds.value = nextExpanded
@@ -1179,7 +1210,7 @@ function toggleCommandExpand(message: UiMessage): void {
 }
 
 function getGroupedCommandsForLatest(message: UiMessage): UiMessage[] {
-  return groupedCommandsByLatestId.value[message.id] ?? []
+  return groupedCommandsByLatestId.value[renderKey(message)] ?? []
 }
 
 function getCommandBlockForLatest(message: UiMessage): UiMessage[] {
@@ -1191,13 +1222,13 @@ function toggleCommandGroup(message: UiMessage): void {
   const groupedCommands = getGroupedCommandsForLatest(message)
   if (groupedCommands.length === 0) return
   const next = new Set(expandedCommandGroupIds.value)
-  if (next.has(message.id)) next.delete(message.id)
-  else next.add(message.id)
+  if (next.has(renderKey(message))) next.delete(renderKey(message))
+  else next.add(renderKey(message))
   expandedCommandGroupIds.value = next
 }
 
 function isCommandGroupExpanded(message: UiMessage): boolean {
-  return expandedCommandGroupIds.value.has(message.id)
+  return expandedCommandGroupIds.value.has(renderKey(message))
 }
 
 function commandGroupSummaryLabel(message: UiMessage): string {
@@ -1214,24 +1245,24 @@ function commandGroupSummaryStatus(message: UiMessage): string {
 
 function toggleWorkedExpand(message: UiMessage): void {
   const next = new Set(expandedWorkedIds.value)
-  if (next.has(message.id)) next.delete(message.id)
-  else next.add(message.id)
+  if (next.has(renderKey(message))) next.delete(renderKey(message))
+  else next.add(renderKey(message))
   expandedWorkedIds.value = next
 }
 
 function isWorkedExpanded(message: UiMessage): boolean {
-  return expandedWorkedIds.value.has(message.id)
+  return expandedWorkedIds.value.has(renderKey(message))
 }
 
 function toggleFileChangeSummary(message: UiMessage): void {
   const next = new Set(expandedFileChangeSummaryIds.value)
-  if (next.has(message.id)) next.delete(message.id)
-  else next.add(message.id)
+  if (next.has(renderKey(message))) next.delete(renderKey(message))
+  else next.add(renderKey(message))
   expandedFileChangeSummaryIds.value = next
 }
 
 function isFileChangeSummaryExpanded(message: UiMessage): boolean {
-  return expandedFileChangeSummaryIds.value.has(message.id)
+  return expandedFileChangeSummaryIds.value.has(renderKey(message))
 }
 
 function fileChangeKey(change: UiFileChange): string {
@@ -1316,25 +1347,28 @@ const props = defineProps<{
   hasMorePersistedAbove?: boolean
   isLoadingPersistedAbove?: boolean
   loadEarlierMessages?: (threadId: string) => Promise<void>
+  answerQuestions?: (reply: AsyncQuestionReply) => Promise<void>
 }>()
 
 const emit = defineEmits<{
-  forkThread: [payload: { threadId: string; turnIndex: number }]
+  openTask: [threadId: string]
+  forkThread: [payload: { threadId: string; turnId: string }]
   rollback: [payload: { turnId: string }]
   implementPlan: [payload: { turnId: string }]
-  respondServerRequest: [payload: { id: number; result?: unknown; error?: { code?: number; message: string } }]
 }>()
 
+const answeredQuestionRefs = computed(() => new Set(props.messages.flatMap(message => message.questionReply ? [questionRefKey(message.questionReply)] : [])))
 const conversationListRef = ref<HTMLElement | null>(null)
 const bottomAnchorRef = ref<HTMLElement | null>(null)
 const modalImageUrl = ref('')
 const copiedResponseAnchorId = ref('')
+const copiedCodeBlockKey = ref('')
+const copyFailureKey = ref('')
+const { t } = useUiLanguage()
+let copyAttempt = 0
 const fileChangeActionState = ref<Record<string, 'idle' | 'undoing' | 'redoing' | 'undone' | 'redone'>>({})
 const fileChangeActionError = ref<Record<string, string>>({})
 const fileChangeRedoPatchIds = ref<Record<string, string[]>>({})
-const toolQuestionAnswers = ref<Record<string, string>>({})
-const toolQuestionOtherAnswers = ref<Record<string, string>>({})
-const mcpElicitationAnswers = ref<Record<string, string | number | boolean | string[]>>({})
 const autoFollowOutput = ref(true)
 const BOTTOM_THRESHOLD_PX = 16
 const CODE_LANGUAGE_ALIASES: Record<string, string> = {
@@ -1432,6 +1466,8 @@ const LOAD_MORE_SCROLL_THRESHOLD_PX = 200
 
 const renderWindowStart = ref(0)
 const isLoadingMore = ref(false)
+const historyLoadError = ref('')
+let historyLoadSequence = 0
 
 const visibleMessages = computed(() => props.messages.slice(renderWindowStart.value))
 const hasMoreAbove = computed(() => renderWindowStart.value > 0 || props.hasMorePersistedAbove === true)
@@ -1457,28 +1493,6 @@ function ensureHighlightJsLoaded(): Promise<void> {
   return highlightJsLoader
 }
 
-type ParsedToolQuestion = {
-  id: string
-  header: string
-  question: string
-  isSecret: boolean
-  isOther: boolean
-  options: Array<{ label: string; description: string }>
-}
-type McpElicitationFieldOption = {
-  value: string
-  label: string
-}
-type McpElicitationField = {
-  key: string
-  label: string
-  description: string
-  required: boolean
-  kind: 'string' | 'number' | 'boolean' | 'singleEnum' | 'multiEnum'
-  inputType: string
-  options: McpElicitationFieldOption[]
-  defaultValue: string | number | boolean | string[]
-}
 type TurnFileChangeSummary = {
   changes: UiFileChange[]
   sourceMessageIds: string[]
@@ -1809,16 +1823,16 @@ const copyableResponseContentByAnchorId = computed<Record<string, string>>(() =>
 
     const responseKey = typeof message.turnIndex === 'number'
       ? `turn:${message.turnIndex}`
-      : `message:${message.id}`
+      : `message:${renderKey(message)}`
     const existing = groupedResponses.get(responseKey)
     if (existing) {
-      existing.anchorMessageId = message.id
+      existing.anchorMessageId = renderKey(message)
       existing.parts.push(content)
       continue
     }
 
     groupedResponses.set(responseKey, {
-      anchorMessageId: message.id,
+      anchorMessageId: renderKey(message),
       parts: [content],
     })
   }
@@ -1840,39 +1854,20 @@ const copyableResponseContentByAnchorId = computed<Record<string, string>>(() =>
   return next
 })
 
-const forkableTurnIndexByAnchorId = computed<Record<string, number>>(() => {
-  const groupedTurns = new Map<string, { anchorMessageId: string; turnIndex: number }>()
-
+const forkableTurnIdByAnchorId = computed<Record<string, string>>(() => {
+  const anchors = new Map<string, string>()
   for (const message of props.messages) {
-    if (!isCopyableAssistantMessage(message) || typeof message.turnIndex !== 'number') continue
-
-    const responseKey = `turn:${message.turnIndex}`
-    const existing = groupedTurns.get(responseKey)
-    if (existing) {
-      existing.anchorMessageId = message.id
-      existing.turnIndex = message.turnIndex
-      continue
-    }
-
-    groupedTurns.set(responseKey, {
-      anchorMessageId: message.id,
-      turnIndex: message.turnIndex,
-    })
+    if (isCopyableAssistantMessage(message) && message.turnId) anchors.set(message.turnId, renderKey(message))
   }
-
-  const next: Record<string, number> = {}
-  for (const groupedTurn of groupedTurns.values()) {
-    next[groupedTurn.anchorMessageId] = groupedTurn.turnIndex
-  }
-  return next
+  return Object.fromEntries([...anchors].map(([turnId, anchorId]) => [anchorId, turnId]))
 })
 
 function showCopyResponseButton(message: UiMessage): boolean {
-  return typeof copyableResponseContentByAnchorId.value[message.id] === 'string'
+  return typeof copyableResponseContentByAnchorId.value[renderKey(message)] === 'string'
 }
 
 function showForkResponseButton(message: UiMessage): boolean {
-  return typeof forkableTurnIndexByAnchorId.value[message.id] === 'number'
+  return typeof forkableTurnIdByAnchorId.value[renderKey(message)] === 'string'
 }
 
 function mergeFileChangeDiff(first: string, second: string): string {
@@ -1923,9 +1918,9 @@ const anchoredFileChangeSummaryByAnchorId = computed<Record<string, TurnFileChan
 
   for (const message of props.messages) {
     if (isCopyableAssistantMessage(message) && typeof message.turnIndex === 'number') {
-      assistantAnchorIdByTurnKey.set(`turn:${message.turnIndex}`, message.id)
+      assistantAnchorIdByTurnKey.set(`turn:${message.turnIndex}`, renderKey(message))
       if (Array.isArray(message.fileChanges) && message.fileChanges.length > 0) {
-        assistantSummaryByAnchorId.set(message.id, {
+        assistantSummaryByAnchorId.set(renderKey(message), {
           changes: aggregateFileChanges(message.fileChanges),
           sourceMessageIds: [],
           source: 'assistant',
@@ -1935,7 +1930,7 @@ const anchoredFileChangeSummaryByAnchorId = computed<Record<string, TurnFileChan
     }
 
     if (!isFileChangeMessage(message)) continue
-    const turnKey = typeof message.turnIndex === 'number' ? `turn:${message.turnIndex}` : `message:${message.id}`
+    const turnKey = typeof message.turnIndex === 'number' ? `turn:${message.turnIndex}` : `message:${renderKey(message)}`
     const current = fileChangeMessagesByTurnKey.get(turnKey)
     if (current) current.push(message)
     else fileChangeMessagesByTurnKey.set(turnKey, [message])
@@ -1948,7 +1943,7 @@ const anchoredFileChangeSummaryByAnchorId = computed<Record<string, TurnFileChan
     const assistantTurnId = assistantSummaryByAnchorId.get(anchorId)?.turnId ?? ''
     summaries[anchorId] = {
       changes: aggregateFileChanges(messages.flatMap((message) => message.fileChanges ?? [])),
-      sourceMessageIds: messages.map((message) => message.id),
+      sourceMessageIds: messages.map((message) => renderKey(message)),
       source: 'metadata',
       turnId: messages.find((message) => typeof message.turnId === 'string' && message.turnId.length > 0)?.turnId ?? assistantTurnId,
     }
@@ -1969,11 +1964,11 @@ const standaloneFileChangeSummaryByMessageId = computed<Record<string, TurnFileC
 
   for (const message of props.messages) {
     if (isCopyableAssistantMessage(message) && typeof message.turnIndex === 'number') {
-      assistantAnchorIdByTurnKey.set(`turn:${message.turnIndex}`, message.id)
+      assistantAnchorIdByTurnKey.set(`turn:${message.turnIndex}`, renderKey(message))
     }
 
     if (!isFileChangeMessage(message)) continue
-    const turnKey = typeof message.turnIndex === 'number' ? `turn:${message.turnIndex}` : `message:${message.id}`
+    const turnKey = typeof message.turnIndex === 'number' ? `turn:${message.turnIndex}` : `message:${renderKey(message)}`
     const current = fileChangeMessagesByTurnKey.get(turnKey)
     if (current) current.push(message)
     else fileChangeMessagesByTurnKey.set(turnKey, [message])
@@ -1986,7 +1981,7 @@ const standaloneFileChangeSummaryByMessageId = computed<Record<string, TurnFileC
     if (!visibleMessage) continue
     summaries[visibleMessage.id] = {
       changes: aggregateFileChanges(messages.flatMap((message) => message.fileChanges ?? [])),
-      sourceMessageIds: messages.map((message) => message.id),
+      sourceMessageIds: messages.map((message) => renderKey(message)),
       source: 'metadata',
       turnId: visibleMessage.turnId ?? messages.find((message) => typeof message.turnId === 'string' && message.turnId.length > 0)?.turnId ?? '',
     }
@@ -2013,11 +2008,11 @@ const hiddenFileChangeMessageIds = computed(() => {
 })
 
 function readAnchoredFileChangeSummary(message: UiMessage): TurnFileChangeSummary | null {
-  return anchoredFileChangeSummaryByAnchorId.value[message.id] ?? null
+  return anchoredFileChangeSummaryByAnchorId.value[renderKey(message)] ?? null
 }
 
 function readStandaloneFileChangeSummary(message: UiMessage): TurnFileChangeSummary | null {
-  return standaloneFileChangeSummaryByMessageId.value[message.id] ?? null
+  return standaloneFileChangeSummaryByMessageId.value[renderKey(message)] ?? null
 }
 
 function fileChangeActionKey(summary: TurnFileChangeSummary | null): string {
@@ -2344,40 +2339,42 @@ function diffViewerMarker(line: DiffViewerLine): string {
 async function copyResponse(anchorMessageId: string): Promise<void> {
   const content = copyableResponseContentByAnchorId.value[anchorMessageId] ?? ''
   if (!content) return
+  await copyMessageText(content, `response:${anchorMessageId}`)
+}
 
-  let copied = false
+async function copyCodeBlock(key: string, content: string): Promise<void> {
+  await copyMessageText(content, `code:${key}`)
+}
+
+async function copyMessageText(content: string, key: string): Promise<void> {
+  const attempt = ++copyAttempt
+  copyFailureKey.value = ''
   try {
     await copyTextToClipboard(content)
-    copied = true
   } catch {
-    copied = false
+    if (attempt === copyAttempt) copyFailureKey.value = key
+    return
   }
-
-  if (!copied) {
-    copied = copyTextWithSelectionFallback(content)
-  }
-
-  if (!copied) return
-
-  copiedResponseAnchorId.value = anchorMessageId
+  if (attempt !== copyAttempt) return
+  copiedResponseAnchorId.value = key.startsWith('response:') ? key.slice('response:'.length) : ''
+  copiedCodeBlockKey.value = key.startsWith('code:') ? key.slice('code:'.length) : ''
   if (copiedMessageResetTimer) {
     clearTimeout(copiedMessageResetTimer)
   }
   copiedMessageResetTimer = setTimeout(() => {
-    if (copiedResponseAnchorId.value === anchorMessageId) {
-      copiedResponseAnchorId.value = ''
-    }
+    copiedResponseAnchorId.value = ''
+    copiedCodeBlockKey.value = ''
     copiedMessageResetTimer = null
   }, 1800)
 }
 
 function forkResponse(anchorMessageId: string): void {
-  const turnIndex = forkableTurnIndexByAnchorId.value[anchorMessageId]
-  if (typeof turnIndex !== 'number') return
+  const turnId = forkableTurnIdByAnchorId.value[anchorMessageId]
+  if (!turnId) return
   if (!props.activeThreadId) return
   emit('forkThread', {
     threadId: props.activeThreadId,
-    turnIndex,
+    turnId,
   })
 }
 
@@ -2387,13 +2384,13 @@ const editableTurnIdByMessageId = computed<Record<string, string>>(() => {
     if (message.role !== 'user' || typeof message.turnIndex !== 'number') continue
     const turnId = typeof message.turnId === 'string' && message.turnId.length > 0 ? message.turnId : ''
     if (!turnId || message.text.trim().length === 0) continue
-    next[message.id] = turnId
+    next[renderKey(message)] = turnId
   }
   return next
 })
 
 function showEditMessageButton(message: UiMessage): boolean {
-  return typeof editableTurnIdByMessageId.value[message.id] === 'string'
+  return typeof editableTurnIdByMessageId.value[renderKey(message)] === 'string'
 }
 
 function editMessage(messageId: string): void {
@@ -3574,17 +3571,19 @@ function parseMessageBlocks(text: string): MessageBlock[] {
   return blocks.length > 0 ? blocks : [{ kind: 'paragraph', value: text }]
 }
 
+function renderKey(message: UiMessage): string { return messageRenderKey(message, props.activeThreadId || '') }
+
 function getMessageBlocks(message: UiMessage): MessageBlock[] {
-  const cached = messageBlockCache.get(message.id)
+  const cached = messageBlockCache.get(renderKey(message))
   if (cached && cached.text === message.text && cached.cwd === props.cwd) {
-    messageBlockCache.delete(message.id)
-    messageBlockCache.set(message.id, cached)
+    messageBlockCache.delete(renderKey(message))
+    messageBlockCache.set(renderKey(message), cached)
     return cached.blocks
   }
   const blocks = parseMessageBlocks(message.text)
   return setBoundedCacheEntry(
     messageBlockCache,
-    message.id,
+    renderKey(message),
     { text: message.text, cwd: props.cwd, blocks },
     MESSAGE_BLOCK_CACHE_LIMIT,
   ).blocks
@@ -3770,411 +3769,6 @@ function renderMarkdownBlocksAsHtml(text: string): string {
   ).html
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
-}
-
-function formatIsoTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleTimeString()
-}
-
-function readRequestReason(request: UiServerRequest): string {
-  const params = asRecord(request.params)
-  const reason = typeof params?.reason === 'string' ? params.reason.trim() : ''
-  if (reason) return reason
-  const message = typeof params?.message === 'string' ? params.message.trim() : ''
-  if (message) return message
-  return typeof params?.prompt === 'string' ? params.prompt.trim() : ''
-}
-
-function requestDisplayTitle(request: UiServerRequest): string {
-  if (request.method === 'item/commandExecution/requestApproval') return 'Command approval required'
-  if (request.method === 'item/fileChange/requestApproval') return 'File change approval required'
-  if (request.method === 'item/permissions/requestApproval') return 'Permissions approval required'
-  if (request.method === 'mcpServer/elicitation/request') return 'MCP server input required'
-  if (request.method === 'item/tool/requestUserInput') return 'Input required'
-  if (request.method === 'item/tool/call') return 'Tool call waiting for response'
-  return request.method
-}
-
-function readMcpElicitationServerName(request: UiServerRequest): string {
-  const params = asRecord(request.params)
-  return typeof params?.serverName === 'string' ? params.serverName.trim() : ''
-}
-
-function readMcpElicitationUrl(request: UiServerRequest): string {
-  const params = asRecord(request.params)
-  return typeof params?.url === 'string' ? params.url.trim() : ''
-}
-
-function mcpElicitationAnswerKey(requestId: number, fieldKey: string): string {
-  return `${String(requestId)}:${fieldKey}`
-}
-
-function readMcpElicitationFields(request: UiServerRequest): McpElicitationField[] {
-  const params = asRecord(request.params)
-  const requestedSchema = asRecord(params?.requestedSchema)
-  const properties = asRecord(requestedSchema?.properties)
-  if (!properties) return []
-
-  const required = new Set(
-    Array.isArray(requestedSchema?.required)
-      ? requestedSchema.required.filter((entry): entry is string => typeof entry === 'string')
-      : [],
-  )
-
-  return Object.entries(properties)
-    .map(([key, value]) => parseMcpElicitationField(key, asRecord(value), required.has(key)))
-    .filter((field): field is McpElicitationField => field !== null)
-}
-
-function parseMcpElicitationField(
-  key: string,
-  schema: Record<string, unknown> | null,
-  required: boolean,
-): McpElicitationField | null {
-  if (!schema) return null
-
-  const label = typeof schema.title === 'string' && schema.title.trim().length > 0 ? schema.title.trim() : key
-  const description = typeof schema.description === 'string' ? schema.description.trim() : ''
-  const type = typeof schema.type === 'string' ? schema.type.trim() : ''
-
-  if (type === 'boolean') {
-    return { key, label, description, required, kind: 'boolean', inputType: 'checkbox', options: [], defaultValue: schema.default === true }
-  }
-
-  if (type === 'number' || type === 'integer') {
-    return {
-      key,
-      label,
-      description,
-      required,
-      kind: 'number',
-      inputType: 'number',
-      options: [],
-      defaultValue: typeof schema.default === 'number' ? schema.default : '',
-    }
-  }
-
-  const options = readMcpElicitationOptions(schema)
-  if (type === 'array') {
-    return {
-      key,
-      label,
-      description,
-      required,
-      kind: 'multiEnum',
-      inputType: 'checkbox',
-      options,
-      defaultValue: Array.isArray(schema.default)
-        ? schema.default.filter((entry): entry is string => typeof entry === 'string')
-        : [],
-    }
-  }
-
-  if (options.length > 0) {
-    return {
-      key,
-      label,
-      description,
-      required,
-      kind: 'singleEnum',
-      inputType: 'select',
-      options,
-      defaultValue: (typeof schema.default === 'string' ? schema.default : '') || options[0]?.value || '',
-    }
-  }
-
-  return {
-    key,
-    label,
-    description,
-    required,
-    kind: 'string',
-    inputType: readMcpElicitationInputType(schema),
-    options: [],
-    defaultValue: typeof schema.default === 'string' ? schema.default : '',
-  }
-}
-
-function readMcpElicitationOptions(schema: Record<string, unknown>): McpElicitationFieldOption[] {
-  const titledSource = Array.isArray(schema.oneOf) ? schema.oneOf : Array.isArray(schema.anyOf) ? schema.anyOf : []
-  const titledOptions = titledSource
-    .map((option) => asRecord(option))
-    .map((option) => ({
-      value: typeof option?.const === 'string' ? option.const : '',
-      label: typeof option?.title === 'string' && option.title.trim().length > 0 ? option.title : (typeof option?.const === 'string' ? option.const : ''),
-    }))
-    .filter((option) => option.value.length > 0)
-  if (titledOptions.length > 0) return titledOptions
-
-  const items = asRecord(schema.items)
-  if (items) {
-    const nestedOptions = readMcpElicitationOptions(items)
-    if (nestedOptions.length > 0) return nestedOptions
-  }
-
-  const values = Array.isArray(schema.enum) ? schema.enum.filter((entry): entry is string => typeof entry === 'string') : []
-  const names = Array.isArray(schema.enumNames) ? schema.enumNames.filter((entry): entry is string => typeof entry === 'string') : []
-  return values.map((value, index) => ({ value, label: names[index] || value }))
-}
-
-function readMcpElicitationInputType(schema: Record<string, unknown>): string {
-  const format = typeof schema.format === 'string' ? schema.format.trim() : ''
-  if (format === 'email') return 'email'
-  if (format === 'uri') return 'url'
-  if (format === 'date') return 'date'
-  if (format === 'date-time') return 'datetime-local'
-  return 'text'
-}
-
-function readMcpElicitationFieldValue(requestId: number, field: McpElicitationField): string | number | boolean | string[] {
-  const saved = mcpElicitationAnswers.value[mcpElicitationAnswerKey(requestId, field.key)]
-  return saved === undefined ? field.defaultValue : saved
-}
-
-function readMcpElicitationMultiValue(requestId: number, field: McpElicitationField): string[] {
-  const value = readMcpElicitationFieldValue(requestId, field)
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
-}
-
-function toolQuestionKey(requestId: number, questionId: string): string {
-  return `${String(requestId)}:${questionId}`
-}
-
-function readToolQuestions(request: UiServerRequest): ParsedToolQuestion[] {
-  const params = asRecord(request.params)
-  const questions = Array.isArray(params?.questions) ? params.questions : []
-  const parsed: ParsedToolQuestion[] = []
-
-  for (const row of questions) {
-    const question = asRecord(row)
-    if (!question) continue
-    const id = typeof question.id === 'string' ? question.id : ''
-    if (!id) continue
-
-    const options = Array.isArray(question.options)
-      ? question.options
-        .map((option) => asRecord(option))
-        .map((option) => ({
-          label: typeof option?.label === 'string' ? option.label : '',
-          description: typeof option?.description === 'string' ? option.description : '',
-        }))
-        .filter((option) => option.label.length > 0)
-      : []
-
-    parsed.push({
-      id,
-      header: typeof question.header === 'string' ? question.header : '',
-      question: typeof question.question === 'string' ? question.question : '',
-      isSecret: question.isSecret === true,
-      isOther: question.isOther === true,
-      options,
-    })
-  }
-
-  return parsed
-}
-
-function readQuestionAnswer(requestId: number, questionId: string, fallback: string): string {
-  const key = toolQuestionKey(requestId, questionId)
-  const saved = toolQuestionAnswers.value[key]
-  if (typeof saved === 'string' && saved.length > 0) return saved
-  return fallback
-}
-
-function onQuestionAnswerInput(requestId: number, questionId: string, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLInputElement)) return
-  const key = toolQuestionKey(requestId, questionId)
-  toolQuestionAnswers.value = {
-    ...toolQuestionAnswers.value,
-    [key]: target.value,
-  }
-}
-
-function readQuestionOptionDescription(requestId: number, question: ParsedToolQuestion): string {
-  const selected = readQuestionAnswer(requestId, question.id, question.options[0]?.label || '')
-  const match = question.options.find((option) => option.label === selected)
-  return match?.description ?? ''
-}
-
-function readQuestionOtherAnswer(requestId: number, questionId: string): string {
-  const key = toolQuestionKey(requestId, questionId)
-  return toolQuestionOtherAnswers.value[key] ?? ''
-}
-
-function onQuestionAnswerChange(requestId: number, questionId: string, value: string): void {
-  const key = toolQuestionKey(requestId, questionId)
-  toolQuestionAnswers.value = {
-    ...toolQuestionAnswers.value,
-    [key]: value,
-  }
-}
-
-function onQuestionOtherAnswerInput(requestId: number, questionId: string, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLInputElement)) return
-  const key = toolQuestionKey(requestId, questionId)
-  toolQuestionOtherAnswers.value = {
-    ...toolQuestionOtherAnswers.value,
-    [key]: target.value,
-  }
-}
-
-function onMcpElicitationFieldInput(requestId: number, field: McpElicitationField, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLInputElement)) return
-  mcpElicitationAnswers.value = {
-    ...mcpElicitationAnswers.value,
-    [mcpElicitationAnswerKey(requestId, field.key)]: target.value,
-  }
-}
-
-function onMcpElicitationBooleanToggle(requestId: number, field: McpElicitationField, event: Event): void {
-  const target = event.target
-  if (!(target instanceof HTMLInputElement)) return
-  mcpElicitationAnswers.value = {
-    ...mcpElicitationAnswers.value,
-    [mcpElicitationAnswerKey(requestId, field.key)]: target.checked,
-  }
-}
-
-function onMcpElicitationMultiToggle(
-  requestId: number,
-  field: McpElicitationField,
-  optionValue: string,
-  event: Event,
-): void {
-  const target = event.target
-  if (!(target instanceof HTMLInputElement)) return
-  const next = new Set(readMcpElicitationMultiValue(requestId, field))
-  if (target.checked) next.add(optionValue)
-  else next.delete(optionValue)
-  mcpElicitationAnswers.value = {
-    ...mcpElicitationAnswers.value,
-    [mcpElicitationAnswerKey(requestId, field.key)]: Array.from(next),
-  }
-}
-
-function onRespondApproval(requestId: number, decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel'): void {
-  emit('respondServerRequest', {
-    id: requestId,
-    result: { decision },
-  })
-}
-
-function onRespondPermissionsApproval(request: UiServerRequest, scope: 'turn' | 'session'): void {
-  const params = asRecord(request.params)
-  const permissions = asRecord(params?.permissions) ?? {}
-  emit('respondServerRequest', {
-    id: request.id,
-    result: {
-      permissions,
-      scope,
-    },
-  })
-}
-
-function buildMcpElicitationContent(request: UiServerRequest): Record<string, unknown> {
-  const content: Record<string, unknown> = {}
-  for (const field of readMcpElicitationFields(request)) {
-    const value = readMcpElicitationFieldValue(request.id, field)
-    if (field.kind === 'multiEnum') {
-      const arrayValue = Array.isArray(value) ? value : []
-      if (arrayValue.length > 0 || field.required) content[field.key] = arrayValue
-      continue
-    }
-    if (field.kind === 'boolean') {
-      content[field.key] = Boolean(value)
-      continue
-    }
-    if (field.kind === 'number') {
-      const numberValue = typeof value === 'number' ? value : Number(String(value).trim())
-      if (!Number.isNaN(numberValue)) content[field.key] = numberValue
-      continue
-    }
-    const textValue = String(value ?? '').trim()
-    if (textValue.length > 0 || field.required) content[field.key] = textValue
-  }
-  return content
-}
-
-function onRespondMcpElicitation(request: UiServerRequest, action: 'accept' | 'decline' | 'cancel'): void {
-  const params = asRecord(request.params)
-  const result: Record<string, unknown> = { action }
-  if (action === 'accept' && typeof params?.mode === 'string' && params.mode === 'form') {
-    result.content = buildMcpElicitationContent(request)
-  }
-  emit('respondServerRequest', {
-    id: request.id,
-    result,
-  })
-}
-
-function onRespondToolRequestUserInput(request: UiServerRequest): void {
-  const questions = readToolQuestions(request)
-  const answers: Record<string, { answers: string[] }> = {}
-
-  for (const question of questions) {
-    const selected = readQuestionAnswer(request.id, question.id, question.options[0]?.label || '')
-    const other = readQuestionOtherAnswer(request.id, question.id).trim()
-    const values = [selected, other].map((value) => value.trim()).filter((value) => value.length > 0)
-    answers[question.id] = { answers: values }
-  }
-
-  emit('respondServerRequest', {
-    id: request.id,
-    result: { answers },
-  })
-}
-
-function onRespondToolCallFailure(requestId: number): void {
-  emit('respondServerRequest', {
-    id: requestId,
-    result: {
-      success: false,
-      contentItems: [
-        {
-          type: 'inputText',
-          text: 'Tool call rejected from codex-web-local UI.',
-        },
-      ],
-    },
-  })
-}
-
-function onRespondToolCallSuccess(requestId: number): void {
-  emit('respondServerRequest', {
-    id: requestId,
-    result: {
-      success: true,
-      contentItems: [],
-    },
-  })
-}
-
-function onRespondEmptyResult(requestId: number): void {
-  emit('respondServerRequest', {
-    id: requestId,
-    result: {},
-  })
-}
-
-function onRejectUnknownRequest(requestId: number): void {
-  emit('respondServerRequest', {
-    id: requestId,
-    error: {
-      code: -32000,
-      message: 'Rejected from codex-web-local UI.',
-    },
-  })
-}
-
 function scrollToBottom(): void {
   const container = conversationListRef.value
   const anchor = bottomAnchorRef.value
@@ -4249,6 +3843,8 @@ async function loadMoreAbove(): Promise<void> {
   if (!container || !hasMoreAbove.value || isLoadingMore.value || props.isLoadingPersistedAbove === true) return
 
   isLoadingMore.value = true
+  historyLoadError.value = ''
+  const sequence = ++historyLoadSequence
   const threadIdAtStart = props.activeThreadId
 
   const prevScrollHeight = container.scrollHeight
@@ -4267,8 +3863,12 @@ async function loadMoreAbove(): Promise<void> {
     if (props.activeThreadId === threadIdAtStart) {
       container.scrollTop = prevScrollTop + (container.scrollHeight - prevScrollHeight)
     }
+  } catch (cause) {
+    if (props.activeThreadId === threadIdAtStart) {
+      historyLoadError.value = cause instanceof Error ? cause.message : '加载历史失败，请重试。'
+    }
   } finally {
-    isLoadingMore.value = false
+    if (sequence === historyLoadSequence) isLoadingMore.value = false
   }
 }
 
@@ -4325,7 +3925,7 @@ watch(
     const commandIds = new Set(
       next
         .filter((message) => message.messageType === 'commandExecution' && message.commandExecution)
-        .map((message) => message.id),
+        .map((message) => renderKey(message)),
     )
     expandedCommandIds.value = pruneCommandIdSet(expandedCommandIds.value, commandIds)
     collapsedAutoCommandIds.value = pruneCommandIdSet(collapsedAutoCommandIds.value, commandIds)
@@ -4412,6 +4012,8 @@ watch(
     autoFollowOutput.value = true
     modalImageUrl.value = ''
     isLoadingMore.value = false
+    historyLoadError.value = ''
+    historyLoadSequence += 1
     fileChangeActionState.value = {}
     fileChangeActionError.value = {}
     fileChangeRedoPatchIds.value = {}
@@ -4426,7 +4028,7 @@ function onConversationScroll(): void {
   const container = conversationListRef.value
   if (!container || props.isLoading) return
   autoFollowOutput.value = isAtBottom(container)
-  if (hasMoreAbove.value && !isLoadingMore.value && container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD_PX) {
+  if (hasMoreAbove.value && !historyLoadError.value && !isLoadingMore.value && container.scrollTop < LOAD_MORE_SCROLL_THRESHOLD_PX) {
     void loadMoreAbove()
   }
 }
@@ -4463,6 +4065,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  copyAttempt++
   clearRenderCaches()
   if (conversationScrollFrame) {
     cancelAnimationFrame(conversationScrollFrame)
@@ -4552,75 +4155,6 @@ onBeforeUnmount(() => {
 
 .message-stack {
   @apply flex flex-col w-full min-w-0;
-}
-
-.request-card {
-  @apply w-full max-w-[min(var(--chat-column-max,45rem),100%)] rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex flex-col gap-2;
-}
-
-.request-title {
-  @apply m-0 text-sm leading-5 font-semibold text-amber-900;
-}
-
-.request-meta {
-  @apply m-0 text-xs leading-4 text-amber-700;
-}
-
-.request-reason {
-  @apply m-0 text-sm leading-5 text-amber-900 whitespace-pre-wrap break-words;
-  overflow-wrap: anywhere;
-}
-
-.request-actions {
-  @apply flex flex-wrap gap-2;
-}
-
-.request-button {
-  @apply rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs text-amber-900 hover:bg-amber-100 transition;
-}
-
-.request-button-primary {
-  @apply border-amber-500 bg-amber-500 text-white hover:bg-amber-600;
-}
-
-.request-user-input {
-  @apply flex flex-col gap-3;
-}
-
-.request-question {
-  @apply flex flex-col gap-1;
-}
-
-.request-question-title {
-  @apply m-0 text-sm leading-5 font-medium text-amber-900;
-}
-
-.request-question-text {
-  @apply m-0 text-xs leading-4 text-amber-800;
-}
-
-.request-question-option-description {
-  @apply m-0 text-xs leading-4 text-amber-700;
-}
-
-.request-link {
-  @apply inline-flex w-fit rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs text-amber-900 hover:bg-amber-100 transition;
-}
-
-.request-select {
-  @apply h-8 rounded-md border border-amber-300 bg-white px-2 text-sm text-amber-900;
-}
-
-.request-input {
-  @apply h-8 rounded-md border border-amber-300 bg-white px-2 text-sm text-amber-900 placeholder:text-amber-500;
-}
-
-.request-checkbox-list {
-  @apply flex flex-col gap-1.5;
-}
-
-.request-checkbox-row {
-  @apply flex items-center gap-2 text-sm text-amber-900;
 }
 
 .live-overlay-inline {

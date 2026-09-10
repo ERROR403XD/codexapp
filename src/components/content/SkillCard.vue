@@ -20,9 +20,10 @@
           <span class="skill-card-name">{{ skill.displayName || skill.name }}</span>
           <template v-if="showStatusBadge">
             <span v-if="skill.installed && skill.enabled === false" class="skill-card-badge-disabled">{{ t('Disabled') }}</span>
-            <span v-else-if="skill.installed" class="skill-card-badge">{{ t('Installed') }}</span>
+            <span v-else-if="skill.installed" class="skill-card-badge">{{ t(skill.enabled === true ? '已启用' : '状态未知') }}</span>
           </template>
         </div>
+        <span v-if="skill.scope" class="skill-card-owner" :title="skill.path">{{ t(skill.pluginId ? '插件' : skill.scope === 'repo' ? '项目' : skill.scope === 'user' ? '用户' : skill.scope) }} · {{ skill.path }}</span>
         <span v-if="showOwner" class="skill-card-owner">{{ skill.owner }}</span>
       </div>
       <button
@@ -37,12 +38,13 @@
     </div>
     <p v-if="skill.description" class="skill-card-desc">{{ skill.description }}</p>
     <div v-if="metaLabels.length > 0" class="skill-card-meta-row">
-      <span v-for="label in metaLabels" :key="label" class="skill-card-meta">{{ label }}</span>
+      <span v-for="label in metaLabels" :key="label" class="skill-card-meta">{{ t(label) }}</span>
     </div>
   </button>
 </template>
 
 <script setup lang="ts">
+import { formatLocalDateTime } from '../../dateTime'
 import { computed } from 'vue'
 import { useUiLanguage } from '../../composables/useUiLanguage'
 import IconTablerFolder from '../icons/IconTablerFolder.vue'
@@ -60,6 +62,8 @@ const props = withDefaults(defineProps<{
     source?: string
     path?: string
     enabled?: boolean
+    scope?: string
+    pluginId?: string
     installCountLabel?: string
   }
   showStatusBadge?: boolean
@@ -98,7 +102,7 @@ const publishedLabel = computed(() => {
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
   if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`
   if (diff < 2592000_000) return `${Math.floor(diff / 86400_000)}d ago`
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return formatLocalDateTime(d.getTime(), { year: undefined, month: 'short', day: 'numeric', hour: undefined, minute: undefined }, 'en-US')
 })
 
 const metaLabels = computed(() => {

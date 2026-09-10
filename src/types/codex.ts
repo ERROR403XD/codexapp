@@ -2,8 +2,8 @@ export type RpcEnvelope<T> = {
   result: T
 }
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-export type SpeedMode = 'standard' | 'fast'
+export type ReasoningEffort = string
+export type SpeedMode = string
 export type CollaborationModeKind = 'default' | 'plan'
 
 export type RpcMethodCatalog = {
@@ -72,6 +72,7 @@ export type UiThread = {
   unread: boolean
   inProgress: boolean
   pendingRequestState?: UiPendingRequestState | null
+  task?: import('../subtasks').TaskIdentity | null
 }
 
 export type UiPendingRequestState = 'approval' | 'response'
@@ -79,6 +80,9 @@ export type UiPendingRequestState = 'approval' | 'response'
 export type UiThreadAutomationStatus = 'ACTIVE' | 'PAUSED'
 
 export type UiThreadAutomation = {
+  model?: string
+  serviceTier?: string
+  reasoningEffort?: ReasoningEffort
   id: string
   kind: 'heartbeat' | 'cron'
   name: string
@@ -90,6 +94,9 @@ export type UiThreadAutomation = {
   createdAtMs: number | null
   updatedAtMs: number | null
   nextRunAtMs: number | null
+  timezone?: string
+  accountStorageId?: string | null
+  protected?: boolean
 }
 
 export type CommandExecutionData = {
@@ -205,6 +212,9 @@ export type UiPlanData = {
 }
 
 export type UiMessage = {
+  historyOrdinal?: number
+  clientUserMessageId?: string
+  userMessageOrdinal?: number
   id: string
   role: 'user' | 'assistant' | 'system'
   text: string
@@ -216,12 +226,19 @@ export type UiMessage = {
   messageType?: string
   rawPayload?: string
   isUnhandled?: boolean
+  compaction?: import('../compaction').CompactionProgress
+  subtask?: import('../subtasks').SubtaskEvent
   commandExecution?: CommandExecutionData
   plan?: UiPlanData
   turnId?: string
   turnIndex?: number
   isAutomationRun?: boolean
   automationDisplayName?: string | null
+  automationRun?: import('../automationMessage').AutomationMessageMetadata
+  delivery?: 'async'
+  questionOrdinal?: number
+  questions?: import('../userQuestions').AsyncQuestion[]
+  questionReply?: import('../userQuestions').QuestionReplyRef
 }
 
 export type UiServerRequest = {
@@ -296,15 +313,23 @@ export type UiProjectGroup = {
 }
 
 export type UiAccountQuotaStatus = 'idle' | 'loading' | 'ready' | 'error'
-export type UiAccountUnavailableReason = 'payment_required'
+export type UiAccountAuthStatus = 'ready' | 'refreshing' | 'switching' | 'reauth_required' | 'payment_required' | 'stale' | 'transient_error' | 'materialization_dirty'
+export type UiAccountUnavailableReason = 'payment_required' | 'reauth_required'
+export type UiAccountActionRequired = 'reauthenticate' | 'resolve_payment' | 'repair_active_credential'
 
 export type UiAccountEntry = {
+  alias?: string
+  protectionPercent?: number
+  resetCredits?: import('../accountResetCredits').ResetCredits | null
   accountId: string
   storageId: string
   userId: string | null
   authMode: string | null
   email: string | null
   planType: string | null
+  credentialRevision: number
+  authStatus: UiAccountAuthStatus
+  lastVerifiedAtIso: string | null
   lastRefreshedAtIso: string
   lastActivatedAtIso: string | null
   quotaSnapshot: UiRateLimitSnapshot | null
@@ -312,6 +337,8 @@ export type UiAccountEntry = {
   quotaStatus: UiAccountQuotaStatus
   quotaError: string | null
   unavailableReason: UiAccountUnavailableReason | null
+  canSwitch: boolean
+  actionRequired: UiAccountActionRequired | null
   isActive: boolean
 }
 

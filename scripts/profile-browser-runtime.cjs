@@ -126,7 +126,11 @@ async function main() {
   mkdirSync(outputDir, { recursive: true })
 
   const targetUrl = toTargetUrl()
-  const browser = await chromium.launch({ headless })
+  const executablePath = process.env.PROFILE_BROWSER_EXECUTABLE?.trim() || undefined
+  const browser = await chromium.launch({
+    headless,
+    ...(executablePath ? { executablePath, args: ['--no-sandbox'] } : {}),
+  })
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   const page = await context.newPage()
   const apiRows = []

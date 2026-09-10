@@ -1,7 +1,7 @@
 <template>
   <form class="thread-composer" @submit.prevent="onSubmit(isTurnInProgress ? activeInProgressMode : 'steer')">
     <p v-if="dictationErrorText" class="thread-composer-dictation-error">
-      {{ dictationErrorText }}
+      {{ t(dictationErrorText) }}
     </p>
 
     <div
@@ -13,11 +13,11 @@
     >
       <div v-if="selectedImages.length > 0" class="thread-composer-attachments">
         <div v-for="image in selectedImages" :key="image.id" class="thread-composer-attachment">
-          <img class="thread-composer-attachment-image" :src="image.url" :alt="image.name || 'Selected image'" />
+          <img class="thread-composer-attachment-image" :src="image.url" :alt="image.name || t('Selected image')" />
           <button
             class="thread-composer-attachment-remove"
             type="button"
-            :aria-label="`Remove ${image.name || 'image'}`"
+            :aria-label="t('Remove {name}', { name: image.name || t('Selected image') })"
             :disabled="isInteractionDisabled"
             @click="removeImage(image.id)"
           >
@@ -32,16 +32,16 @@
           <span class="thread-composer-folder-chip-name" :title="group.name">{{ group.name }}</span>
           <span class="thread-composer-folder-chip-meta">
             <template v-if="group.isUploading">
-              {{ getFolderUploadPercent(group) }}% uploading ({{ group.processed }}/{{ group.total }})
+              {{ t('{percent}% uploading ({processed}/{total})', { percent: getFolderUploadPercent(group), processed: group.processed, total: group.total }) }}
             </template>
             <template v-else>
-              {{ group.filePaths.length }} file{{ group.filePaths.length === 1 ? '' : 's' }}
+              {{ t('{count} files', { count: group.filePaths.length }) }}
             </template>
           </span>
           <button
             class="thread-composer-folder-chip-remove"
             type="button"
-            :aria-label="`Remove folder ${group.name}`"
+            :aria-label="t('Remove folder {name}', { name: group.name })"
             :disabled="isInteractionDisabled"
             @click="removeFolderAttachment(group.id)"
           >×</button>
@@ -55,7 +55,7 @@
           <button
             class="thread-composer-file-chip-remove"
             type="button"
-            :aria-label="`Remove ${att.label}`"
+            :aria-label="t('Remove {name}', { name: att.label })"
             :disabled="isInteractionDisabled"
             @click="removeFileAttachment(att.fsPath)"
           >×</button>
@@ -68,7 +68,7 @@
             class="thread-composer-skill-chip-name"
             type="button"
             :title="skillMarkdownPath(skill.path)"
-            :aria-label="`Open ${skill.displayName || skill.name} SKILL.md`"
+            :aria-label="t('Open {name} SKILL.md', { name: skill.displayName || skill.name })"
             @click="openSkillMarkdown(skill)"
           >
             {{ skill.displayName || skill.name }}
@@ -76,7 +76,7 @@
           <button
             class="thread-composer-skill-chip-remove"
             type="button"
-            :aria-label="`Remove skill ${skill.displayName || skill.name}`"
+            :aria-label="t('Remove skill {name}', { name: skill.displayName || skill.name })"
             @click="removeSkill(skill.path)"
           >×</button>
         </span>
@@ -94,7 +94,7 @@
         @drop="onInputDrop"
       >
         <div v-if="isDragActive" class="thread-composer-drop-overlay" aria-hidden="true">
-          <span class="thread-composer-drop-overlay-copy">Drop images or files</span>
+          <span class="thread-composer-drop-overlay-copy">{{ t('Drop images or files') }}</span>
         </div>
         <div v-if="isFileMentionOpen" class="thread-composer-file-mentions">
           <template v-if="fileMentionSuggestions.length > 0">
@@ -123,18 +123,28 @@
           </template>
           <div v-else class="thread-composer-file-mention-empty">{{ t('No matching files') }}</div>
         </div>
+        <ComposerCommandPicker v-if="commandPicker.visible.value" :commands="commandPicker.results.value" :selected-index="commandPicker.selectedIndex.value" :anchor="inputRef" :list-id="commandListId" @choose="commandPicker.choose" @dismiss="commandPicker.dismiss" />
         <textarea
           ref="inputRef"
           v-model="draft"
           class="thread-composer-input"
-          :placeholder="placeholderText"
+          :placeholder="t(placeholderText)"
           :disabled="isInteractionDisabled"
+          :role="commandPicker.visible.value ? 'combobox' : undefined"
+          :aria-expanded="commandPicker.visible.value"
+          :aria-controls="commandPicker.visible.value ? commandListId : undefined"
+          :aria-activedescendant="commandPicker.visible.value && commandPicker.selectedIndex.value >= 0 ? `${commandListId}-${commandPicker.selectedIndex.value}` : undefined"
+          :aria-autocomplete="commandPicker.visible.value ? 'list' : undefined"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
+          @click="updateCommandPicker()"
+          @keyup="onComposerCursorKeyup"
+          @select="updateCommandPicker()"
           @input="onInputChange"
           @keydown="onInputKeydown"
           @paste="onInputPaste"
         />
         <button
-          v-if="hasExpandedComposerToggle"
           class="thread-composer-expand"
           type="button"
           :aria-label="isComposerExpanded ? t('Exit full screen composer') : t('Expand composer')"
@@ -159,7 +169,7 @@
             :disabled="isInteractionDisabled"
             @click="toggleAttachMenu"
           >
-            +
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           </button>
 
           <div v-if="isAttachMenuOpen" class="thread-composer-attach-menu">
@@ -188,53 +198,14 @@
               {{ t('Take photo') }}
             </button>
             <div class="thread-composer-attach-separator" />
-            <div class="thread-composer-attach-mode">
-              <span class="thread-composer-attach-mode-label">{{ t('In-progress send') }}</span>
-              <div class="thread-composer-attach-mode-buttons">
-                <button
-                  class="thread-composer-attach-mode-button"
-                  :class="{ 'is-active': activeInProgressMode === 'steer' }"
-                  type="button"
-                  :disabled="isInteractionDisabled"
-                  @click="setActiveInProgressMode('steer')"
-                >
-                  {{ t('Steer') }}
-                </button>
-                <button
-                  class="thread-composer-attach-mode-button"
-                  :class="{ 'is-active': activeInProgressMode === 'queue' }"
-                  type="button"
-                  :disabled="isInteractionDisabled"
-                  @click="setActiveInProgressMode('queue')"
-                >
-                  {{ t('Queue') }}
-                </button>
-              </div>
-            </div>
+            <button class="thread-composer-attach-item" type="button" :disabled="isInteractionDisabled" @click="isAttachMenuOpen = false; emit('command', { name: 'goal', complete: () => {} })">{{ t('持续目标') }}</button>
             <div class="thread-composer-attach-separator" />
-            <button
-              v-if="isFastModeSupported"
-              class="thread-composer-attach-setting"
-              type="button"
-              role="switch"
-              :aria-checked="selectedSpeedMode === 'fast'"
-              :aria-label="`${t('Fast mode')} ${selectedSpeedMode === 'fast' ? t('enabled') : t('disabled')}`"
-              :disabled="isSpeedToggleDisabled"
-              @click="onToggleSpeedMode"
-            >
-              <span class="thread-composer-attach-setting-copy">
-                <span class="thread-composer-attach-setting-label">{{ t('Fast mode') }}</span>
-                <span class="thread-composer-attach-setting-description">{{ speedModeDescription }}</span>
-              </span>
-              <span
-                class="thread-composer-attach-switch"
-                :class="{
-                  'is-on': selectedSpeedMode === 'fast',
-                  'is-busy': isUpdatingSpeedMode,
-                  'is-disabled': isSpeedToggleDisabled,
-                }"
-              />
-            </button>
+            <div class="thread-composer-attach-setting-copy model-capability-summary">
+              <span>{{ t(modelCapabilityDescription) }}</span>
+              <span v-if="reportedModel">{{ t('运行时最近返回：') }}{{ reportedModel }}</span>
+              <span>{{ t(speedModeDescription) }}</span>
+            </div>
+            <AppSelect class="model-service-tier-picker" :model-value="selectedSpeedMode" :options="serviceTierOptions.map(option => ({ ...option, label: t(option.label) }))" :disabled="isSpeedToggleDisabled" @update:model-value="emit('update:selected-speed-mode', $event)" />
             <button
               class="thread-composer-attach-setting"
               type="button"
@@ -256,21 +227,11 @@
           </div>
         </div>
 
+        <span v-if="modelSettingsWarning || modelCatalogError" class="model-capability-warning" role="status">{{ t(modelSettingsWarning || modelCatalogError || '') }}</span>
         <template v-if="!isDictationRecording">
-          <ComposerDropdown
-            class="thread-composer-control"
-            :model-value="selectedModel"
-            :options="modelOptions"
-            :selected-prefix-icon="showFastModeModelIcon ? IconTablerBolt : null"
-            :placeholder="t('Model')"
-            open-direction="up"
-            :disabled="isComposerConfigDisabled || models.length === 0"
-            enable-search
-            :search-placeholder="t('Search models...')"
-            @update:model-value="onModelSelect"
-          />
-
-          <ComposerSearchDropdown
+          <ComposerSearchDropdown hide-chevron
+            ref="commandSkillsRef"
+            @open-change="onCommandSubmenuChange('skills', $event)"
             class="thread-composer-control"
             :options="skillDropdownOptions"
             :selected-values="selectedSkillPaths"
@@ -285,18 +246,35 @@
             @create="onCreatePrompt"
             @remove="onRemovePrompt"
           />
-
-          <ComposerDropdown
-            class="thread-composer-control"
-            :model-value="selectedReasoningEffort"
-            :options="reasoningOptions"
-            :placeholder="t('Thinking')"
-            open-direction="up"
-            :disabled="isComposerConfigDisabled"
-            @update:model-value="onReasoningEffortSelect"
-          />
         </template>
 
+        <div v-if="!isDictationRecording" class="thread-composer-model-controls">
+          <ModelReasoningPicker
+            ref="commandModelRef"
+            class="thread-composer-control"
+            :selected-model="selectedModel"
+            :selected-effort="selectedReasoningEffort"
+            :default-effort="modelCapability?.defaultEffort"
+            :models="modelOptions"
+            :efforts="reasoningOptions"
+            :disabled="isComposerConfigDisabled"
+            @open-change="onCommandSubmenuChange('model', $event)"
+            @model="onModelSelect"
+            @effort="onReasoningEffortSelect"
+          />
+          <button
+            class="thread-composer-fast"
+            type="button"
+            role="switch"
+            :aria-checked="isFastSelected"
+            :aria-label="t('Fast 快速模式')"
+            :title="t(fastModeHint)"
+            :disabled="isComposerConfigDisabled || fastControl.disabled"
+            @click="toggleFastMode"
+          >
+            <IconTablerBolt class="thread-composer-fast-icon" aria-hidden="true" /> Fast
+          </button>
+        </div>
         <div
           class="thread-composer-actions"
           :class="{ 'thread-composer-actions--recording': isDictationRecording }"
@@ -306,7 +284,7 @@
           </div>
 
           <span v-if="dictationState === 'recording'" class="thread-composer-dictation-timer">
-            {{ dictationDurationLabel }}
+            {{ t(dictationDurationLabel) }}
           </span>
 
           <button
@@ -316,8 +294,8 @@
               'thread-composer-mic--active': dictationState === 'recording',
             }"
             type="button"
-            :aria-label="dictationButtonLabel"
-            :title="dictationButtonLabel"
+            :aria-label="t(dictationButtonLabel)"
+            :title="t(dictationButtonLabel)"
             :disabled="isInteractionDisabled"
             @click="onDictationToggle"
             @pointerdown="onDictationPressStart"
@@ -390,14 +368,18 @@
 </template>
 
 <script setup lang="ts">
+import AppSelect from '../common/AppSelect.vue'
+import { fastModeControl, effortOptions, tierOptions, modelSettingsProblem, type ModelCapability } from '../../modelCapabilities'
+import { isOverlayEventInside } from '../../composables/overlayEvents'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import ComposerCommandPicker from './ComposerCommandPicker.vue'
+import { buildComposerCommands, type ComposerCommand, type SlashToken } from './composerCommands'
+import { useComposerCommandPicker } from '../../composables/useComposerCommandPicker'
 import type {
   CollaborationModeKind,
   CollaborationModeOption,
   ReasoningEffort,
   SpeedMode,
-  UiRateLimitSnapshot,
-  UiRateLimitWindow,
   UiThreadTokenUsage,
   UiTokenUsageBreakdown,
 } from '../../types/codex'
@@ -421,7 +403,7 @@ import IconTablerMaximize from '../icons/IconTablerMaximize.vue'
 import IconTablerMicrophone from '../icons/IconTablerMicrophone.vue'
 import IconTablerMinimize from '../icons/IconTablerMinimize.vue'
 import IconTablerPlayerStopFilled from '../icons/IconTablerPlayerStopFilled.vue'
-import ComposerDropdown from './ComposerDropdown.vue'
+import ModelReasoningPicker from './ModelReasoningPicker.vue'
 import ComposerSearchDropdown from './ComposerSearchDropdown.vue'
 
 type SkillSourceBadge = {
@@ -434,16 +416,19 @@ type SkillItem = { name: string; displayName?: string; description: string; path
 
 const props = defineProps<{
   activeThreadId: string
+  draftKey?: string
   cwd?: string
   collaborationModes?: CollaborationModeOption[]
   selectedCollaborationMode: CollaborationModeKind
   models: string[]
+  modelCapabilities?: ModelCapability[]
+  modelCatalogError?: string
+  reportedModel?: string
   selectedModel: string
   selectedReasoningEffort: ReasoningEffort | ''
   selectedSpeedMode: SpeedMode
   skills?: SkillItem[]
   threadTokenUsage?: UiThreadTokenUsage | null
-  codexQuota?: UiRateLimitSnapshot | null
   isTurnInProgress?: boolean
   isStopPending?: boolean
   isInterruptingTurn?: boolean
@@ -451,7 +436,6 @@ const props = defineProps<{
   disabled?: boolean
   hasQueueAbove?: boolean
   sendWithEnter?: boolean
-  inProgressSubmitMode?: 'steer' | 'queue'
   dictationClickToToggle?: boolean
   dictationAutoSend?: boolean
   dictationLanguage?: string
@@ -472,16 +456,19 @@ export type SubmitPayload = {
   fileAttachments: FileAttachment[]
   skills: Array<{ name: string; path: string }>
   mode: 'steer' | 'queue'
+  complete?: (saved: boolean) => void
 }
 
 export type ThreadComposerExposed = {
   hydrateDraft: (payload: ComposerDraftPayload) => void
+  acknowledgeDraft: (payload: ComposerDraftPayload) => void
   appendTextToDraft: (text: string) => void
   hasUnsavedDraft: () => boolean
 }
 
 const emit = defineEmits<{
   submit: [payload: SubmitPayload]
+  command: [request: import('./composerCommands').AppCommandRequest]
   interrupt: []
   'update:selected-collaboration-mode': [mode: CollaborationModeKind]
   'update:selected-model': [modelId: string]
@@ -541,7 +528,7 @@ const {
     draft.value = draft.value ? `${draft.value}\n${text}` : text
     dictationFeedback.value = ''
     if (props.dictationAutoSend !== false) {
-      const mode = props.isTurnInProgress ? activeInProgressMode.value : 'steer'
+      const mode = props.isTurnInProgress ? activeInProgressMode : 'steer'
       onSubmit(mode)
       return
     }
@@ -573,8 +560,6 @@ const fileMentionSuggestions = ref<ComposerFileSuggestion[]>([])
 const isFileMentionOpen = ref(false)
 const fileMentionHighlightedIndex = ref(0)
 const isComposerExpanded = ref(false)
-const isDraftOverflowing = ref(false)
-let composerOverflowMeasurementQueued = false
 const draftGeneration = ref(0)
 let fileMentionSearchToken = 0
 let fileMentionDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -585,26 +570,120 @@ const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.
 const DRAFT_STORAGE_PREFIX = 'codex-web-local.thread-draft.v1.'
 let lastActiveThreadId = ''
 
-const reasoningOptions: Array<{ value: ReasoningEffort; label: string }> = [
-  { value: 'none', label: 'None' },
-  { value: 'minimal', label: 'Minimal' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'Extra high' },
-]
+const modelCapability = computed(() => props.modelCapabilities?.find(model => model.id === props.selectedModel))
+const reasoningOptions = computed(() => effortOptions(modelCapability.value))
+const serviceTierOptions = computed(() => tierOptions(modelCapability.value, props.selectedSpeedMode))
+const fastControl = computed(() => fastModeControl(modelCapability.value, props.selectedSpeedMode))
+const isFastSelected = computed(() => fastControl.value.checked)
+const fastModeHint = computed(() => fastControl.value.hint)
+function toggleFastMode(): void {
+  if (isComposerConfigDisabled.value || fastControl.value.disabled) return
+  emit('update:selected-speed-mode', fastControl.value.nextValue)
+}
+const modelSettingsWarning = computed(() => modelSettingsProblem(modelCapability.value, props.selectedReasoningEffort, props.selectedSpeedMode, selectedImages.value.length > 0))
+const modelCapabilityDescription = computed(() => {
+  const model = modelCapability.value
+  if (!model) return '模型能力尚未确认'
+  return `${model.displayName} · ${model.inputModalities ? model.inputModalities.map(value => value === 'image' ? '图片' : value === 'text' ? '文字' : value).join('、') : '输入能力未公布'}`
+})
 function formatModelLabel(modelId: string): string {
   return modelId.trim().replace(/^gpt/i, 'GPT')
 }
 
 const modelOptions = computed(() =>
-  props.models.map((modelId) => ({ value: modelId, label: formatModelLabel(modelId) })),
+  props.models.map((modelId) => ({ value: modelId, label: props.modelCapabilities?.find(model => model.id === modelId)?.displayName || formatModelLabel(modelId) })),
 )
 const isPlanModeSelected = computed(() => props.selectedCollaborationMode === 'plan')
 
 const isPlanModeWaitingForModel = computed(() =>
   props.selectedCollaborationMode === 'plan' && props.selectedModel.trim().length === 0,
 )
+
+const commandModelRef = ref<{ open(): void; close(): void } | null>(null)
+const commandSkillsRef = ref<{ open(): void; close(): void } | null>(null)
+const commandListId = `composer-commands-${Math.random().toString(36).slice(2)}`
+const commandEntries = computed(() => buildComposerCommands(props.skills ?? [], savedPrompts.value, t))
+const commandPicker = useComposerCommandPicker(commandEntries, applyComposerCommand)
+let isComposingInput = false
+let pastedInput = false
+let commandContext: { token: SlashToken; draft: string; menu: 'model' | 'skills' } | null = null
+function updateCommandPicker(paste = false) {
+  const input = inputRef.value
+  if (!input || isComposingInput || isInteractionDisabled.value) { commandPicker.dismiss(); return }
+  commandPicker.update(draft.value, input.selectionStart, input.selectionEnd, paste)
+  if (commandPicker.visible.value) {
+    closeFileMention(); isAttachMenuOpen.value = false
+    commandModelRef.value?.close(); commandSkillsRef.value?.close()
+  }
+}
+function onCompositionStart() { isComposingInput = true; commandPicker.visible.value = false; commandPicker.selectedIndex.value = -1; closeFileMention() }
+function onCompositionEnd() { isComposingInput = false; updateCommandPicker() }
+function onComposerCursorKeyup(event: KeyboardEvent) {
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) updateCommandPicker()
+}
+function replaceCommandToken(token: SlashToken, replacement: string, original = draft.value) {
+  if (draft.value !== original || draft.value.slice(token.start, token.end) !== token.text) return false
+  commandContext = null
+  const input = inputRef.value
+  let inserted = false
+  if (input && input.value === original) {
+    input.focus({ preventScroll: true })
+    input.setSelectionRange(token.start, token.end)
+    // Native textarea edits preserve Undo; direct assignment is a fallback only.
+    try { inserted = document.execCommand('insertText', false, replacement) } catch { /* unavailable in this browser */ }
+  }
+  draft.value = inserted && input ? input.value : original.slice(0, token.start) + replacement + original.slice(token.end)
+  commandPicker.reset()
+  void nextTick(() => {
+    inputRef.value?.focus({ preventScroll: true })
+    inputRef.value?.setSelectionRange(token.start + replacement.length, token.start + replacement.length)
+  })
+  return true
+}
+function applyComposerCommand(command: ComposerCommand, token: SlashToken) {
+  if (isComposerConfigDisabled.value) return
+  if (command.action === 'model' || command.action === 'skills') {
+    commandContext = { token, draft: draft.value, menu: command.action }
+    if (command.action === 'model') commandModelRef.value?.open()
+    else commandSkillsRef.value?.open()
+    return
+  }
+  if (command.action === 'app') {
+    const original = draft.value
+    emit('command', { name: command.id as import('./composerCommands').AppCommandName, complete: () => { replaceCommandToken(token, '', original) } })
+    return
+  }
+  if (command.action === 'mention') {
+    if (replaceCommandToken(token, '@')) void nextTick(updateFileMentionState)
+    return
+  }
+  if (command.action === 'init') {
+    replaceCommandToken(token, '请阅读当前项目结构与已有说明，创建或完善项目 AGENTS.md，记录实际开发、测试及目录约定。保留已有有效规则，不猜测未核实的命令；先说明准备修改的内容。')
+    return
+  }
+  if (command.action === 'prompt') {
+    const prompt = savedPrompts.value.find((row) => row.path === command.value)
+    if (prompt) replaceCommandToken(token, prompt.content)
+  } else if (command.action === 'skill') {
+    const skill = (props.skills ?? []).find((row) => row.path === command.value)
+    if (skill && replaceCommandToken(token, '') && !selectedSkills.value.some((row) => row.path === skill.path)) selectedSkills.value.push(skill)
+  } else if (replaceCommandToken(token, '')) emit('update:selected-collaboration-mode', command.action)
+}
+function onCommandSubmenuChange(menu: 'model' | 'skills', open: boolean) {
+  if (open) {
+    commandPicker.dismiss(); closeFileMention()
+    if (menu === 'model') commandSkillsRef.value?.close()
+    else commandModelRef.value?.close()
+  } else if (commandContext?.menu === menu) commandContext = null
+}
+function consumeCommandContext(replacement = '') {
+  const context = commandContext
+  if (!context) return
+  commandContext = null
+  replaceCommandToken(context.token, replacement, context.draft)
+}
+watch(draft, (value) => { if (commandContext && commandContext.draft !== value) commandContext = null })
+watch(() => props.activeThreadId, () => { commandPicker.dismiss(); commandContext = null })
 
 const selectedSkillPaths = computed(() => selectedSkills.value.map((s) => s.path))
 const skillDropdownOptions = computed(() =>
@@ -633,7 +712,9 @@ const skillDropdownOptions = computed(() =>
   ],
 )
 
+const queueSubmissionPending = ref(false)
 const canSubmit = computed(() => {
+  if (queueSubmissionPending.value) return false
   if (props.disabled) return false
   if (props.isUpdatingSpeedMode) return false
   if (!props.activeThreadId) return false
@@ -656,10 +737,10 @@ const standaloneFileAttachments = computed(() => {
   return fileAttachments.value.filter((att) => !grouped.has(att.fsPath))
 })
 const isInteractionDisabled = computed(() => props.disabled || !props.activeThreadId)
-const isComposerConfigDisabled = computed(() => props.disabled || !props.activeThreadId)
-const isFastModeSupported = computed(() => /^gpt-5\.(?:4|5)(?:$|-)/.test(props.selectedModel.trim()))
+const isComposerConfigDisabled = computed(() => props.disabled || !props.activeThreadId || props.isUpdatingSpeedMode)
+const isFastModeSupported = computed(() => modelCapability.value?.serviceTiers?.some(tier => tier.value === props.selectedSpeedMode) === true)
 const showFastModeModelIcon = computed(() =>
-  props.selectedSpeedMode === 'fast' && isFastModeSupported.value,
+  !!props.selectedSpeedMode && isFastModeSupported.value,
 )
 const isSpeedToggleDisabled = computed(() =>
   isInteractionDisabled.value || props.isUpdatingSpeedMode === true,
@@ -668,21 +749,16 @@ const speedModeDescription = computed(() => {
   if (props.isUpdatingSpeedMode) {
     return t('Saving speed setting...')
   }
-  return props.selectedSpeedMode === 'fast'
-    ? t('About 1.5x faster, with credits used at 2x')
-    : t('Default speed with normal credit usage')
+  return modelCapability.value?.serviceTiers?.find(tier => tier.value === props.selectedSpeedMode)?.description || (modelCapability.value?.serviceTiers === null ? '服务商未公布速度能力' : '按模型默认速度执行')
 })
-const inProgressMode = computed<'steer' | 'queue'>(() =>
-  props.inProgressSubmitMode === 'steer' ? 'steer' : 'queue',
-)
-const activeInProgressMode = ref<'steer' | 'queue'>(inProgressMode.value)
+const activeInProgressMode = 'queue' as const
 const isDictationRecording = computed(() => dictationState.value === 'recording')
 const dictationButtonLabel = computed(() => {
   if (dictationState.value === 'recording') return t('Stop dictation')
   return props.dictationClickToToggle ? t('Click to dictate') : t('Hold to dictate')
 })
 const dictationErrorText = computed(() =>
-  dictationState.value === 'idle' ? dictationFeedback.value.trim() : '',
+  dictationState.value === 'idle' ? t(dictationFeedback.value.trim()) : '',
 )
 const attachmentFeedbackText = computed(() => {
   const stats = attachmentBatchStats.value
@@ -724,151 +800,11 @@ const placeholderText = computed(() =>
 const hasSubmitContent = computed(() =>
   draft.value.trim().length > 0 || selectedImages.value.length > 0 || fileAttachments.value.length > 0,
 )
-const draftLineCount = computed(() => draft.value.split('\n').length)
-const hasExpandedComposerToggle = computed(() =>
-  isComposerExpanded.value || draftLineCount.value >= 6 || isDraftOverflowing.value,
-)
-const quotaSummaryText = computed(() => buildQuotaSummaryText(props.codexQuota ?? null))
-const quotaWeeklyRefreshText = computed(() => '')
-const quotaTooltipText = computed(() => buildQuotaTooltipText(props.codexQuota ?? null))
 const contextUsageView = computed(() => buildContextUsageView(props.threadTokenUsage ?? null))
 const contextUsageSummaryText = computed(() => contextUsageView.value?.summaryText ?? '')
 const contextUsageTooltipText = computed(() => contextUsageView.value?.tooltipText ?? '')
 const contextUsageRemainingPercent = computed(() => contextUsageView.value?.percentRemaining ?? 0)
 const contextUsageTone = computed(() => contextUsageView.value?.tone ?? 'healthy')
-
-function formatPlanType(planType: string | null | undefined): string {
-  if (!planType || planType === 'unknown') return ''
-  if (planType === 'edu') return 'Education'
-  return `${planType.slice(0, 1).toUpperCase()}${planType.slice(1)}`
-}
-
-function formatWindowSpan(windowMinutes: number | null): string {
-  if (typeof windowMinutes !== 'number' || !Number.isFinite(windowMinutes) || windowMinutes <= 0) return ''
-  if (windowMinutes % 1440 === 0) return `${windowMinutes / 1440}d`
-  if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`
-  return `${windowMinutes}m`
-}
-
-function formatResetTime(resetsAt: number | null): string {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return ''
-  const resetMs = resetsAt * 1000
-  const diffMs = resetMs - Date.now()
-  if (diffMs <= 0) return 'resetting now'
-
-  const totalMinutes = Math.round(diffMs / 60000)
-  if (totalMinutes < 60) return `resets in ${Math.max(1, totalMinutes)}m`
-
-  const totalHours = Math.round(totalMinutes / 60)
-  if (totalHours < 48) return `resets in ${Math.max(1, totalHours)}h`
-
-  const totalDays = Math.round(totalHours / 24)
-  return `resets in ${Math.max(1, totalDays)}d`
-}
-
-function formatResetDate(resetsAt: number | null): string {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return ''
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(resetsAt * 1000))
-}
-
-function formatResetDateCompact(resetsAt: number | null): string {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return ''
-  const date = new Date(resetsAt * 1000)
-  return `${date.getMonth() + 1}月${date.getDate()}日`
-}
-
-function pickWeeklyQuotaWindow(quota: UiRateLimitSnapshot): UiRateLimitWindow | null {
-  const windows = [quota.primary, quota.secondary].filter((window): window is UiRateLimitWindow => window !== null)
-  const exactWeekly = windows.find((window) => window.windowMinutes === 7 * 24 * 60)
-  if (exactWeekly) return exactWeekly
-
-  const longerWindows = windows
-    .filter((window) => typeof window.windowMinutes === 'number' && window.windowMinutes >= 7 * 24 * 60)
-    .sort((first, second) => (first.windowMinutes ?? 0) - (second.windowMinutes ?? 0))
-
-  if (longerWindows[0]) return longerWindows[0]
-  return quota.secondary ?? null
-}
-
-function formatWindowSummary(window: UiRateLimitWindow): string {
-  const remainingPercent = Math.max(0, Math.min(100, 100 - Math.round(window.usedPercent)))
-  const span = formatWindowSpan(window.windowMinutes)
-  return span ? `${remainingPercent}% / ${span}` : `${remainingPercent}%`
-}
-
-function buildQuotaSummaryText(quota: UiRateLimitSnapshot | null): string {
-  if (!quota) return ''
-
-  const segments: string[] = []
-  const plan = formatPlanType(quota.planType)
-  if (plan) segments.push(plan)
-  if (quota.primary) segments.push(formatWindowSummary(quota.primary))
-  if (quota.secondary) segments.push(formatWindowSummary(quota.secondary))
-
-  const weeklyWindow = pickWeeklyQuotaWindow(quota)
-  const weeklyRefreshDate = formatResetDateCompact(weeklyWindow?.resetsAt ?? null)
-  if (weeklyRefreshDate) {
-    segments.push(weeklyRefreshDate)
-  }
-
-  if (segments.length === 0 && quota.credits?.unlimited) {
-    segments.push('Unlimited credits')
-  } else if (segments.length === 0 && quota.credits?.hasCredits && quota.credits.balance) {
-    segments.push(`${quota.credits.balance} credits`)
-  }
-
-  return segments.join(' · ')
-}
-
-function buildQuotaTooltipText(quota: UiRateLimitSnapshot | null): string {
-  if (!quota) return ''
-
-  const lines: string[] = []
-  const plan = formatPlanType(quota.planType)
-  if (plan) {
-    lines.push(`Plan: ${plan}`)
-  }
-
-  if (quota.primary) {
-    const reset = formatResetTime(quota.primary.resetsAt)
-    lines.push(`Primary window: ${formatWindowSummary(quota.primary)}${reset ? `, ${reset}` : ''}`)
-  }
-
-  if (quota.secondary) {
-    const reset = formatResetTime(quota.secondary.resetsAt)
-    lines.push(`Secondary window: ${formatWindowSummary(quota.secondary)}${reset ? `, ${reset}` : ''}`)
-  }
-
-  if (quota.credits?.unlimited) {
-    lines.push('Credits: unlimited')
-  } else if (quota.credits?.hasCredits && quota.credits.balance) {
-    lines.push(`Credits: ${quota.credits.balance}`)
-  }
-
-  const weeklyWindow = pickWeeklyQuotaWindow(quota)
-  if (weeklyWindow) {
-    const weeklyRefreshDate = formatResetDate(weeklyWindow.resetsAt)
-    if (weeklyRefreshDate) {
-      lines.push(`Weekly refresh: ${weeklyRefreshDate}`)
-    }
-  }
-
-  return lines.join('\n')
-}
-
-function buildQuotaWeeklyRefreshText(quota: UiRateLimitSnapshot | null): string {
-  if (!quota) return ''
-  const weeklyWindow = pickWeeklyQuotaWindow(quota)
-  if (!weeklyWindow) return ''
-  const weeklyRefreshDate = formatResetDate(weeklyWindow.resetsAt)
-  return weeklyRefreshDate ? `Weekly refresh ${weeklyRefreshDate}` : ''
-}
 
 function formatCompactTokenCount(value: number): string {
   if (!Number.isFinite(value)) return '0'
@@ -952,32 +888,35 @@ function buildContextUsageView(
   }
 }
 
-function onSubmit(mode: 'steer' | 'queue' = 'steer'): void {
-  const text = draft.value.trim()
-  if (!canSubmit.value) return
+function onSubmit(mode: 'steer' | 'queue' = 'queue'): void {
+  commandPicker.dismiss()
+  commandContext = null
+  if (!canSubmit.value || modelSettingsWarning.value) return
+  const threadId = draftContextId.value
+  const snapshot = JSON.stringify(getCurrentDraftPayload())
+  queueSubmissionPending.value = true
+  const complete = (saved: boolean) => {
+    queueSubmissionPending.value = false
+    if (!saved || draftContextId.value !== threadId || JSON.stringify(getCurrentDraftPayload()) !== snapshot) return
+    clearPersistedDraftForThread(threadId)
+    clearDraftState()
+    isComposerExpanded.value = false
+    folderUploadGroups.value = []
+    isAttachMenuOpen.value = false
+    closeFileMention()
+    if (isAndroid || isMobile.value) inputRef.value?.blur()
+    else void nextTick(() => inputRef.value?.focus())
+  }
   emit('submit', {
-    text,
+    text: draft.value.trim(),
     imageUrls: selectedImages.value.map((image) => image.url),
     fileAttachments: [...fileAttachments.value],
-    skills: selectedSkills.value.map((s) => ({ name: s.name, path: s.path })),
+    skills: selectedSkills.value.map((skill) => ({ name: skill.name, path: skill.path })),
     mode,
+    complete,
   })
-  clearPersistedDraftForThread(props.activeThreadId)
-  clearDraftState()
-  isComposerExpanded.value = false
-  folderUploadGroups.value = []
-  isAttachMenuOpen.value = false
-  closeFileMention()
-  if (isAndroid || isMobile.value) {
-    inputRef.value?.blur()
-    return
-  }
-  nextTick(() => inputRef.value?.focus())
 }
 
-function setActiveInProgressMode(mode: 'steer' | 'queue'): void {
-  activeInProgressMode.value = mode
-}
 
 function replaceDraftState(payload: ComposerDraftPayload): void {
   draftGeneration.value += 1
@@ -1002,6 +941,7 @@ function replaceDraftState(payload: ComposerDraftPayload): void {
 }
 
 function clearDraftState(): void {
+  commandPicker.reset()
   replaceDraftState({
     text: '',
     imageUrls: [],
@@ -1009,6 +949,18 @@ function clearDraftState(): void {
     skills: [],
   })
   isComposerExpanded.value = false
+}
+
+function acknowledgeDraft(payload: ComposerDraftPayload): void {
+  const current = getCurrentDraftPayload()
+  const comparable = (draft: ComposerDraftPayload) => JSON.stringify({
+    text: draft.text.trim(), imageUrls: draft.imageUrls,
+    skills: draft.skills.map(skill => [skill.name, skill.path]),
+    files: draft.fileAttachments.map(file => [file.label, file.path, file.fsPath]),
+  })
+  if (comparable(current) !== comparable(payload)) return
+  clearPersistedDraftForThread(draftContextId.value)
+  clearDraftState()
 }
 
 function getDraftStorageKey(threadId: string): string {
@@ -1098,32 +1050,20 @@ function onInterrupt(): void {
   emit('interrupt')
 }
 
-function updateComposerOverflowState(): void {
+function toggleComposerExpanded(): void {
+  if (isInteractionDisabled.value) return
   const input = inputRef.value
-  if (!input) {
-    isDraftOverflowing.value = false
-    return
-  }
-  isDraftOverflowing.value = input.scrollHeight > input.clientHeight + 2
-}
+  const selection = input ? [input.selectionStart, input.selectionEnd, input.selectionDirection] as const : null
+  isComposerExpanded.value = !isComposerExpanded.value
 
-function queueComposerOverflowMeasurement(): void {
-  if (composerOverflowMeasurementQueued) return
-  composerOverflowMeasurementQueued = true
   void nextTick(() => {
-    composerOverflowMeasurementQueued = false
-    updateComposerOverflowState()
+    input?.focus({ preventScroll: true })
+    if (selection) input?.setSelectionRange(...selection)
   })
 }
 
-function toggleComposerExpanded(): void {
-  if (isInteractionDisabled.value) return
-  isComposerExpanded.value = !isComposerExpanded.value
-  queueComposerOverflowMeasurement()
-  void nextTick(() => inputRef.value?.focus())
-}
-
 function onModelSelect(value: string): void {
+  if (commandContext?.menu === 'model') consumeCommandContext()
   emit('update:selected-model', value)
 }
 
@@ -1135,10 +1075,6 @@ function onReasoningEffortSelect(value: string): void {
   emit('update:selected-reasoning-effort', value as ReasoningEffort)
 }
 
-function onToggleSpeedMode(): void {
-  if (isSpeedToggleDisabled.value) return
-  emit('update:selected-speed-mode', props.selectedSpeedMode === 'fast' ? 'standard' : 'fast')
-}
 
 function onDictationToggle(): void {
   if (!props.dictationClickToToggle) return
@@ -1253,7 +1189,7 @@ function normalizeSelectedFiles(files: FileList | File[] | null | undefined): Fi
 }
 
 function formatAttachmentFileCount(count: number): string {
-  return count === 1 ? '1 file' : `${count} files`
+  return t('{count} files', { count })
 }
 
 function beginAttachmentWork(sessionToken: number): boolean {
@@ -1518,6 +1454,9 @@ function onWindowDragCleanup(): void {
 }
 
 function onInputPaste(event: ClipboardEvent): void {
+  pastedInput = true
+  queueMicrotask(() => { pastedInput = false })
+  commandPicker.dismiss()
   if (isInteractionDisabled.value) return
   const plainText = event.clipboardData?.getData('text/plain') ?? ''
   if (plainText.length >= PASTED_TEXT_FILE_THRESHOLD) {
@@ -1543,15 +1482,20 @@ function onInputPaste(event: ClipboardEvent): void {
   attachIncomingFiles(imageFiles)
 }
 
-function onInputChange(): void {
+function onInputChange(event?: Event): void {
   if (dictationFeedback.value) {
     dictationFeedback.value = ''
   }
-  queueComposerOverflowMeasurement()
+
+  if (isComposingInput || (event as InputEvent)?.isComposing) return
   updateFileMentionState()
+  updateCommandPicker(pastedInput || (event as InputEvent)?.inputType === 'insertFromPaste')
+  pastedInput = false
 }
 
 function onInputKeydown(event: KeyboardEvent): void {
+  if (isComposingInput || event.isComposing || event.keyCode === 229) return
+  if (commandPicker.keydown(event)) return
   if (isFileMentionOpen.value) {
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -1591,7 +1535,7 @@ function onInputKeydown(event: KeyboardEvent): void {
     : event.key === 'Enter' && (event.metaKey || event.ctrlKey)
   if (shouldSend) {
     event.preventDefault()
-    onSubmit(props.isTurnInProgress ? activeInProgressMode.value : 'steer')
+    onSubmit(props.isTurnInProgress ? activeInProgressMode : 'steer')
     return
   }
 }
@@ -1668,7 +1612,6 @@ function hydrateDraft(payload: ComposerDraftPayload): void {
   replaceDraftState(payload)
   void nextTick(() => {
     inputRef.value?.focus()
-    updateComposerOverflowState()
   })
 }
 
@@ -1684,8 +1627,11 @@ function appendTextToDraft(text: string): void {
   nextTick(() => inputRef.value?.focus())
 }
 
+let promptsRevision = 0
 async function reloadPrompts(): Promise<void> {
-  savedPrompts.value = await getComposerPrompts()
+  const revision = ++promptsRevision
+  const prompts = await getComposerPrompts()
+  if (revision === promptsRevision) savedPrompts.value = prompts
 }
 
 function promptOptionValue(path: string): string {
@@ -1780,6 +1726,15 @@ function skillSourceBadge(skill: SkillItem): SkillSourceBadge {
 }
 
 function onSkillDropdownToggle(path: string, checked: boolean): void {
+  if (commandContext?.menu === 'skills') {
+    const promptPath = promptPathFromOptionValue(path)
+    if (promptPath) {
+      const prompt = savedPrompts.value.find((row) => row.path === promptPath)
+      if (prompt) consumeCommandContext(prompt.content)
+      return
+    }
+    consumeCommandContext()
+  }
   const promptPath = promptPathFromOptionValue(path)
   if (promptPath) {
     onPromptDropdownToggle(promptPath)
@@ -1801,27 +1756,29 @@ function onDocumentClick(event: MouseEvent): void {
   const root = attachMenuRootRef.value
   if (!root) return
   const target = event.target as Node | null
-  if (!target || root.contains(target)) return
+  if (!target || isOverlayEventInside(event, root)) return
   isAttachMenuOpen.value = false
 }
 
 onMounted(() => {
-  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('click', onDocumentClick, true)
   window.addEventListener('drop', onWindowDragCleanup)
   window.addEventListener('dragend', onWindowDragCleanup)
   window.addEventListener('blur', onWindowDragCleanup)
   void reloadPrompts()
-  queueComposerOverflowMeasurement()
+
 })
 
 defineExpose<ThreadComposerExposed>({
   hydrateDraft,
+  acknowledgeDraft,
   appendTextToDraft,
   hasUnsavedDraft: () => hasUnsavedDraft.value,
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('click', onDocumentClick)
+  promptsRevision++
+  document.removeEventListener('click', onDocumentClick, true)
   window.removeEventListener('drop', onWindowDragCleanup)
   window.removeEventListener('dragend', onWindowDragCleanup)
   window.removeEventListener('blur', onWindowDragCleanup)
@@ -1833,8 +1790,9 @@ onBeforeUnmount(() => {
   }
 })
 
+const draftContextId = computed(() => props.draftKey || props.activeThreadId)
 watch(
-  () => props.activeThreadId,
+  () => draftContextId.value,
   (nextThreadId) => {
     cancelDictation()
     if (lastActiveThreadId) {
@@ -1856,9 +1814,6 @@ watch([draft, selectedImages, fileAttachments, selectedSkills], () => {
   persistDraftForThread(lastActiveThreadId, getCurrentDraftPayload())
 }, { deep: true })
 
-watch(draft, () => {
-  queueComposerOverflowMeasurement()
-})
 
 watch(
   () => props.cwd,
@@ -1869,12 +1824,6 @@ watch(
   },
 )
 
-watch(
-  inProgressMode,
-  (nextMode) => {
-    activeInProgressMode.value = nextMode
-  },
-)
 
 
 </script>
@@ -1887,7 +1836,11 @@ watch(
 }
 
 .thread-composer:has(.thread-composer-input-wrap--expanded) {
-  @apply fixed inset-0 z-50 max-w-none bg-white/95 p-3 sm:p-6;
+  @apply fixed z-50 max-w-none bg-white/95 p-2 sm:p-3;
+  inset: calc(var(--content-header-height, 0px) + 0.5rem) 0 max(env(safe-area-inset-bottom, 0px), var(--virtual-keyboard-inset, 0px));
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .thread-composer-shell {
@@ -1895,7 +1848,13 @@ watch(
 }
 
 .thread-composer:has(.thread-composer-input-wrap--expanded) .thread-composer-shell {
-  @apply mx-auto flex h-full w-full max-w-[min(var(--chat-column-max,72rem),100%)] flex-col shadow-2xl;
+  @apply mx-auto flex min-h-0 flex-1 w-full max-w-[min(var(--chat-column-max,72rem),100%)] flex-col shadow-2xl;
+}
+
+.thread-composer:has(.thread-composer-input-wrap--expanded) :is(.thread-composer-attachments, .thread-composer-folder-chips, .thread-composer-file-chips, .thread-composer-skill-chips) {
+  max-height: 15%;
+  overflow-y: auto;
+  flex-shrink: 1;
 }
 
 .thread-composer-shell--drag-active {
@@ -2022,7 +1981,7 @@ watch(
 }
 
 .thread-composer-input-wrap {
-  @apply relative;
+  @apply relative flex gap-1.5;
 }
 
 .thread-composer-input-wrap--expanded {
@@ -2094,11 +2053,11 @@ watch(
 }
 
 .thread-composer-input {
-  @apply w-full min-w-0 min-h-10 sm:min-h-11 max-h-40 rounded-xl border-0 bg-transparent px-1 py-2 pr-10 text-sm text-zinc-900 outline-none transition resize-none overflow-y-auto;
+  @apply flex-1 w-full min-w-0 min-h-10 sm:min-h-11 max-h-40 rounded-xl border-0 bg-transparent px-1 py-2 text-sm text-zinc-900 outline-none transition resize-none overflow-y-auto;
 }
 
 .thread-composer-input-wrap--expanded .thread-composer-input {
-  @apply h-full max-h-none pr-12 text-base leading-6;
+  @apply h-full min-h-0 max-h-none text-base leading-6;
 }
 
 .thread-composer-input:focus {
@@ -2110,7 +2069,7 @@ watch(
 }
 
 .thread-composer-expand {
-  @apply absolute right-0.5 top-0.5 inline-flex h-8 w-8 items-center justify-center rounded-full border-0 bg-zinc-100 text-zinc-500 shadow-sm transition hover:bg-zinc-200 hover:text-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-400;
+  @apply mt-0.5 inline-flex h-8 w-8 shrink-0 self-start items-center justify-center rounded-full border-0 bg-zinc-100 text-zinc-500 shadow-sm transition hover:bg-zinc-200 hover:text-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-400;
 }
 
 .thread-composer-expand-icon {
@@ -2118,7 +2077,7 @@ watch(
 }
 
 .thread-composer-controls {
-  @apply relative mt-2 sm:mt-3 flex items-center gap-2 sm:gap-4 overflow-visible pb-px;
+  @apply relative mt-2 sm:mt-3 flex shrink-0 items-center gap-2 sm:gap-4 overflow-visible pb-px;
 }
 
 .thread-composer-controls--recording {
@@ -2126,11 +2085,11 @@ watch(
 }
 
 .thread-composer-attach {
-  @apply relative shrink-0;
+  @apply relative flex items-center shrink-0;
 }
 
 .thread-composer-attach-trigger {
-  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-none border-0 bg-transparent pb-px text-xl leading-tight text-zinc-700 transition hover:text-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-400;
+  @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-none border-0 bg-transparent text-xl leading-none text-zinc-700 transition hover:text-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-400;
 }
 
 .thread-composer-attach-menu {
@@ -2216,7 +2175,7 @@ watch(
 
 
 .thread-composer-actions {
-  @apply ml-auto flex min-w-0 items-center gap-2;
+  @apply flex shrink-0 min-w-0 items-center gap-2;
 }
 
 .thread-composer-actions--recording {

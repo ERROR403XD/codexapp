@@ -1,3 +1,4 @@
+import { ApiProxyGateway } from './apiProxy/gateway.js'
 import { fileURLToPath } from 'node:url'
 import { dirname, extname, isAbsolute, join } from 'node:path'
 import type { Server as HttpServer, IncomingMessage } from 'node:http'
@@ -8,6 +9,7 @@ import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
 import { createAuthSession } from './authMiddleware.js'
 import { createDirectoryListingHtml, createTextEditorHtml, decodeBrowsePath, getLocalDirectoryListing, isTextEditableFile, normalizeLocalPath } from './localBrowseUi.js'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { createFrontendAssetsMiddleware, sendFrontendEntry } from './frontendAssets.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
@@ -19,7 +21,7 @@ export type ServerOptions = {
 
 export type ServerInstance = {
   app: Express
-  dispose: () => void
+  dispose: () => Promise<void>
   attachWebSocket: (server: HttpServer) => void
 }
 
@@ -43,11 +45,7 @@ function renderFrontendMissingHtml(message: string, details?: string[]): string 
     '<body>',
     `<h1>${message}</h1>`,
     lines,
-    '<p>Redirecting to chat in 3 seconds...</p>',
     '<p><a href="/">Back to chat</a></p>',
-    '<script>',
-    'setTimeout(() => { window.location.assign("/") }, 3000)',
-    '</script>',
     '</body>',
     '</html>',
   ].join('')
@@ -75,12 +73,30 @@ function readWildcardPathParam(value: unknown): string {
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
   const bridge = createCodexBridgeMiddleware()
+  const apiProxy = new ApiProxyGateway()
+  app.use((req, res, next) => {
+    const pathname = new URL(req.url || '/', 'http://localhost').pathname
+    if (pathname === '/v1' || pathname.startsWith('/v1/')) {
+      void apiProxy.handleApi(req, res)
+      return
+    }
+    next()
+  })
   const authSession = options.password ? createAuthSession(options.password) : null
 
   // 1. Auth middleware (if password is set)
   if (authSession) {
     app.use(authSession.middleware)
   }
+
+  app.use((req, res, next) => {
+    const pathname = new URL(req.url || '/', 'http://localhost').pathname
+    if (pathname === '/codex-api/api-proxy' || pathname.startsWith('/codex-api/api-proxy/')) {
+      void apiProxy.handleManagement(req, res)
+      return
+    }
+    next()
+  })
 
   // 2. Bridge middleware for /codex-api/*
   app.use(bridge)
@@ -221,9 +237,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   const hasFrontendAssets = existsSync(spaEntryFile)
 
   // 8. Static files from Vue build
-  if (hasFrontendAssets) {
-    app.use(express.static(distDir))
-  }
+  app.use(createFrontendAssetsMiddleware(distDir))
 
   // 9. SPA fallback
   app.use((_req, res) => {
@@ -241,8 +255,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
       return
     }
 
-    res.sendFile(spaEntryFile, (error) => {
-      if (!error) return
+    void sendFrontendEntry(res, spaEntryFile).catch(() => {
       if (!res.headersSent) {
         res.status(404).type('text/html; charset=utf-8').send(renderFrontendMissingHtml('Frontend entry file not found.'))
       }
@@ -251,8 +264,9 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
 
   return {
     app,
-    dispose: () => bridge.dispose(),
+    dispose: async () => { await apiProxy.close(); await bridge.dispose() },
     attachWebSocket: (server: HttpServer) => {
+      apiProxy.attach(server)
       const wss = new WebSocketServer({ noServer: true })
 
       server.on('upgrade', (req: IncomingMessage, socket, head) => {

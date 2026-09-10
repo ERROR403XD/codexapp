@@ -1,3 +1,8 @@
+import { readAsyncQuestions, readQuestionReply } from '../../userQuestions'
+import { normalizeToolSummary } from './toolSummary'
+import { compactionFromTurn } from '../../compaction'
+import { readTaskIdentity } from '../../subtasks'
+import { parseAutomationMessage, type AutomationMessageMetadata } from '../../automationMessage'
 import type {
   Thread,
   ThreadItem,
@@ -129,6 +134,7 @@ function parseUserMessageContent(
   rawBlocks: UiMessage[]
   isAutomationRun: boolean
   automationDisplayName: string | null
+  automationRun?: AutomationMessageMetadata
 } {
   if (!Array.isArray(content)) {
     return { text: '', images: [], skills: [], fileAttachments: [], rawBlocks: [], isAutomationRun: false, automationDisplayName: null }
@@ -171,16 +177,18 @@ function parseUserMessageContent(
 
   const fullText = textChunks.join('\n')
   const fileAttachments = extractFileAttachments(fullText)
+  const automation = parseAutomationMessage(fullText)
   const heartbeat = parseHeartbeatEnvelope(fullText)
 
   return {
-    text: heartbeat?.instructions ?? extractCodexUserRequestText(fullText),
+    text: automation?.prompt ?? heartbeat?.instructions ?? extractCodexUserRequestText(fullText),
     images,
     skills,
     fileAttachments,
     rawBlocks,
-    isAutomationRun: heartbeat !== null,
-    automationDisplayName: heartbeat?.automationId || null,
+    isAutomationRun: automation !== null || heartbeat !== null,
+    automationDisplayName: automation?.metadata?.name || heartbeat?.automationId || null,
+    automationRun: automation?.metadata,
   }
 }
 
@@ -407,6 +415,8 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
         role: 'assistant',
         text: item.text,
         messageType: item.type,
+        delivery: (item as unknown as { delivery?: string }).delivery === 'async' ? 'async' : undefined,
+        questions: readAsyncQuestions((item as unknown as { questions?: unknown }).questions),
       },
     ]
   }
@@ -420,13 +430,15 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
       messages.push({
         id: item.id,
         role: 'user',
-        text: parsed.text,
+        ...readQuestionReply(parsed.text),
         images: parsed.images,
         skills: parsed.skills.length > 0 ? parsed.skills : undefined,
         fileAttachments: parsed.fileAttachments.length > 0 ? parsed.fileAttachments : undefined,
         messageType: item.type,
+        clientUserMessageId: typeof (item as Record<string, unknown>).clientUserMessageId === 'string' ? (item as Record<string, unknown>).clientUserMessageId as string : undefined,
         isAutomationRun: parsed.isAutomationRun,
         automationDisplayName: parsed.automationDisplayName,
+        automationRun: parsed.automationRun,
       })
     }
 
@@ -523,7 +535,8 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
     ]
   }
 
-  return []
+  const summary = normalizeToolSummary(item)
+  return summary ? [summary] : []
 }
 
 function normalizeCommandStatus(value: unknown): CommandExecutionData['status'] {
@@ -594,6 +607,7 @@ function toUiThread(summary: Thread): UiThread {
     preview: summary.preview,
     unread: false,
     inProgress: readThreadInProgress(summary),
+    task: readTaskIdentity(summary),
   }
 }
 
@@ -637,13 +651,24 @@ export function normalizeThreadMessagesV2(payload: ThreadReadResponse, baseTurnI
     const rawTurnId = typeof turn?.id === 'string' ? turn.id.trim() : ''
     const turnId = rawTurnId.length > 0 ? rawTurnId : undefined
     const items = Array.isArray(turn.items) ? turn.items : []
-    for (const item of items) {
+    const compactions = compactionFromTurn(turn)
+    let userMessageOrdinal = 0
+    let questionOrdinal = 0
+    for (const [itemIndex, item] of items.entries()) {
+      let historyOrdinal = itemIndex * 1024
+      if (item.type === 'contextCompaction') {
+        const message = compactions.find(message => message.id === item.id)
+        if (message) messages.push({ ...message, turnId, turnIndex, historyOrdinal })
+        continue
+      }
       for (const msg of toUiMessages(item)) {
-        messages.push({ ...msg, turnId, turnIndex })
+        messages.push({ ...msg, turnId, turnIndex, historyOrdinal: historyOrdinal++, ...(msg.role === 'user' ? { userMessageOrdinal: userMessageOrdinal++ } : {}), ...(msg.questions?.length ? { questionOrdinal: questionOrdinal++ } : {}) })
       }
     }
     const errorText = readTurnErrorText(turn)
-    if (turn.status === 'failed' && errorText) {
+    const failedCompaction = compactions.find(message => message.compaction?.status === 'failed')
+    if (failedCompaction) messages.push({ ...failedCompaction, turnId, turnIndex })
+    if (turn.status === 'failed' && errorText && !failedCompaction) {
       const errorIdBase = turnId ?? `turn-${turnIndex}`
       messages.push({
         id: `${errorIdBase}-error`,

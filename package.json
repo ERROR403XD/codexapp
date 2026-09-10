@@ -1,17 +1,17 @@
 {
   "name": "codexapp",
-  "version": "0.1.87",
+  "version": "0.2.16",
   "description": "A lightweight web interface for Codex that runs on top of the Codex app-server, allowing remote access from any browser",
   "type": "module",
   "license": "MIT",
   "author": "Pavel Voronin, Igor Levochkin",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/friuns2/codexui.git"
+    "url": "git+https://github.com/ERROR403XD/codexapp.git"
   },
-  "homepage": "https://github.com/friuns2/codexui#readme",
+  "homepage": "https://github.com/ERROR403XD/codexapp#readme",
   "bugs": {
-    "url": "https://github.com/friuns2/codexui/issues"
+    "url": "https://github.com/ERROR403XD/codexapp/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -35,11 +35,14 @@
     "dist-cli/",
     "scripts/dev.cjs",
     "scripts/dev-random-home.cjs",
-    "scripts/fix-pty-native-build.cjs"
+    "scripts/fix-pty-native-build.cjs",
+    "README.en.md",
+    "THIRD_PARTY_NOTICES.md",
+    "resources/api-proxy/LICENSE",
+    "resources/api-proxy/manifest.json"
   ],
   "pnpm": {
     "onlyBuiltDependencies": [
-      "@firebase/util",
       "esbuild",
       "node-pty",
       "protobufjs"
@@ -57,17 +60,16 @@
     "preview": "vite preview",
     "prepublishOnly": "pnpm run build",
     "profile:browser": "node scripts/profile-browser-runtime.cjs",
-    "profile:thread": "PROFILE_ROUTE='#/thread/019da7c0-4e12-7a91-837c-f7c11cc8ab6c' node scripts/profile-browser-runtime.cjs"
+    "profile:thread": "node scripts/profile-browser-runtime.cjs"
   },
   "dependencies": {
-    "@composio/client": "0.1.0-alpha.66",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "commander": "^13.1.0",
     "express": "^5.1.0",
-    "firebase": "^12.2.1",
     "highlight.js": "^11.11.1",
-    "qrcode-terminal": "^0.12.0",
+    "rrule": "2.8.1",
+    "smol-toml": "1.8.0",
     "ws": "^8.18.3"
   },
   "optionalDependencies": {
@@ -78,7 +80,6 @@
     "@tailwindcss/vite": "^4.1.18",
     "@types/express": "^5.0.0",
     "@types/node": "^22.13.2",
-    "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^5.2.1",
     "playwright": "^1.59.1",

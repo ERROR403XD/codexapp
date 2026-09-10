@@ -5,11 +5,11 @@ output/
 .playwright-cli/
 test-results/
 *.tsbuildinfo
-
 package-lock.json
-pnpm-lock.yaml
 .codex/
-.env.local
-
-package.json
+.env
+.env.*
+.cert/
+*.pem
+*.key
 .omx/

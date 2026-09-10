@@ -11,7 +11,9 @@
             v-if="!isSidebarCollapsed"
             class="sidebar-thread-controls-host"
             :is-sidebar-collapsed="isSidebarCollapsed"
-            :show-new-thread-button="true"
+            :show-new-thread-button="false"
+            :theme="darkMode" :settings-active="isSettingsRoute"
+            @cycle-theme="cycleDarkMode" @open-settings="openSettings"
             @toggle-sidebar="setSidebarCollapsed(!isSidebarCollapsed)"
             @start-new-thread="onStartNewThreadFromToolbar"
           >
@@ -34,7 +36,9 @@
               v-model="sidebarSearchQuery"
               class="sidebar-search-input"
               type="text"
-              :placeholder="t('Filter threads...')"
+              :placeholder="sidebarSearchMode === 'title' ? t('Search titles') : t('Search messages')"
+              :aria-label="t('Search threads')"
+              maxlength="500"
               @keydown="onSidebarSearchKeydown"
             />
             <button
@@ -48,31 +52,29 @@
             </button>
           </div>
 
-          <button
-            v-if="!isSidebarCollapsed"
-            class="sidebar-skills-link"
-            :class="{ 'is-active': isSkillsRoute }"
-            type="button"
-            @click="router.push({ name: 'skills' }); isMobile && setSidebarCollapsed(true)"
-          >
-            <span class="sidebar-skills-link-icon" aria-hidden="true">
-              <IconTablerBolt />
-            </span>
-            <span class="sidebar-skills-link-copy">
-              <span class="sidebar-skills-link-title">{{ t('Skills') }}</span>
-              <span class="sidebar-skills-link-subtitle">{{ t('Plugins, apps, MCPs') }}</span>
-            </span>
-          </button>
+          <div v-if="!isSidebarCollapsed && isSidebarSearchVisible" class="sidebar-search-options">
+            <AppSelect
+              class="sidebar-search-scope"
+              :model-value="sidebarSearchMode"
+              :options="[{ value: 'title', label: t('Title') }, { value: 'body', label: t('Body') }]"
+              :aria-label="t('Search scope')"
+              @update:model-value="setSidebarSearchMode"
+            />
+          </div>
+
+          <p v-if="!isSidebarCollapsed && isSidebarSearchVisible && sidebarSearchQuery.trim()" class="sidebar-search-status" :title="t(threadSearchScope)" role="status">{{ t(threadSearchStatus) }} <button v-if="threadSearchState === 'error'" type="button" class="sidebar-search-retry" @click="threadSearchVersion += 1">{{ t('重试') }}</button></p>
+
+
 
           <button
             v-if="!isSidebarCollapsed"
-            class="sidebar-skills-link"
+            class="sidebar-skills-link sidebar-automations-link"
             :class="{ 'is-active': isAutomationsRoute }"
             type="button"
             @click="router.push({ name: 'automations' }); isMobile && setSidebarCollapsed(true)"
           >
             <span class="sidebar-skills-link-icon sidebar-automations-link-icon" aria-hidden="true">
-              <IconTablerBolt />
+              <IconTablerClock />
             </span>
             <span class="sidebar-skills-link-copy">
               <span class="sidebar-skills-link-title">{{ t('Automations') }}</span>
@@ -80,7 +82,21 @@
             </span>
           </button>
 
-          <SidebarThreadTree ref="sidebarThreadTreeRef" :groups="projectGroups" :project-display-name-by-id="projectDisplayNameById"
+          <button
+            v-if="!isSidebarCollapsed"
+            class="sidebar-skills-link sidebar-api-proxy-link"
+            :class="{ 'is-active': isApiProxyRoute }"
+            type="button"
+            @click="router.push({ name: 'api-proxy' }); isMobile && setSidebarCollapsed(true)"
+          >
+            <span class="sidebar-skills-link-icon sidebar-api-proxy-link-icon" aria-hidden="true"><IconTablerPlug /></span>
+            <span class="sidebar-skills-link-copy">
+              <span class="sidebar-skills-link-title">{{ t('API Proxy') }}</span>
+              <span class="sidebar-skills-link-subtitle">{{ t('Codex client access') }}</span>
+            </span>
+          </button>
+
+          <SidebarThreadTree ref="sidebarThreadTreeRef" :groups="sidebarThreadGroups" :accounts="accounts" :models="availableModelIds" :model-capabilities="availableModels" :goals="threadGoals" :quota-resume-marks="quotaResumeMarks" :quota-resume-error="quotaResumeError" @toggle-quota-resume="toggleQuotaResume" :project-display-name-by-id="projectDisplayNameById"
             :project-git-repo-by-name="projectGitRepoByName"
             :project-cwd-by-name="projectCwdByName"
             v-if="!isSidebarCollapsed"
@@ -88,8 +104,9 @@
             :is-thread-list-fully-loaded="isThreadListFullyLoaded"
             :search-query="sidebarSearchQuery"
             :search-matched-thread-ids="serverMatchedThreadIds"
+            :search-state="threadSearchState"
             @select="onSelectThread"
-            @archive="onArchiveThread" @start-new-thread="onStartNewThread" @rename-project="onRenameProject"
+            @archive="onArchiveThread" @start-new-thread="onStartNewThread" @edit-project="onEditProject"
             @browse-thread-files="onBrowseThreadFiles"
             @save-thread-project="onSaveThreadProject"
             @browse-project-files="onBrowseProjectFiles"
@@ -99,176 +116,138 @@
             @rename-thread="onRenameThread"
             @fork-thread="onForkThread"
             @remove-project="onRemoveProject" @reorder-project="onReorderProject"
-            @copy-thread-chat="onCopyThreadChat"
             @automations-changed="onAutomationsChanged"
             @start-new-chat="onStartProjectlessNewChat" />
         </div>
 
-        <div
-          v-if="!isSidebarCollapsed"
-          ref="settingsAreaRef"
-          class="sidebar-settings-area"
-          @click="onSettingsAreaClick"
-        >
-          <Transition name="settings-panel">
-            <div
-              v-if="isSettingsOpen"
-              ref="settingsPanelRef"
-              class="sidebar-settings-panel"
-              @click.stop
-            >
-              <div class="sidebar-settings-account-section">
-                <div class="sidebar-settings-account-header">
-                  <div class="sidebar-settings-account-header-main">
-                    <button
-                      class="sidebar-settings-account-collapse"
-                      type="button"
-                      :aria-expanded="!isAccountsSectionCollapsed"
-                      :title="isAccountsSectionCollapsed ? t('Expand accounts') : t('Collapse accounts')"
-                      @click="toggleAccountsSectionCollapsed"
-                    >
-                      <span class="sidebar-settings-account-collapse-icon">{{ isAccountsSectionCollapsed ? '▸' : '▾' }}</span>
-                    </button>
-                    <span class="sidebar-settings-account-title">{{ t('Accounts') }}</span>
-                    <span class="sidebar-settings-account-count">{{ accounts.length }}</span>
-                  </div>
-                  <button
-                    class="sidebar-settings-account-refresh"
-                    type="button"
-                    :disabled="isRefreshingAccounts || isSwitchingAccounts || isStartingCodexLogin || isCompletingCodexLogin"
-                    @click="onRefreshAccounts"
-                  >
-                    {{ isRefreshingAccounts ? t('Reloading…') : t('Reload') }}
-                  </button>
-                </div>
-                <template v-if="!isAccountsSectionCollapsed">
-                  <div v-if="accountActionError" class="sidebar-settings-account-error visible-error-with-feedback">
-                    <span>{{ accountActionError }}</span>
-                    <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, accountActionError)">{{ t('Send feedback') }}</a>
-                  </div>
-                  <div class="sidebar-settings-account-login">
-                    <button
-                      class="sidebar-settings-account-login-button"
-                      type="button"
-                      :disabled="isRefreshingAccounts || isSwitchingAccounts || isStartingCodexLogin || isCompletingCodexLogin"
-                      @click="onStartCodexLogin"
-                    >
-                      {{ isStartingCodexLogin ? t('Starting login…') : t('Login') }}
-                    </button>
-                    <a
-                      v-if="codexLoginUrl"
-                      class="sidebar-settings-account-login-link"
-                      :href="codexLoginUrl"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {{ t('Open login URL') }}
-                    </a>
-                  </div>
-                  <p v-if="accounts.length === 0" class="sidebar-settings-account-empty">
-                    {{ t('Click Login, or run `codex login`, then click reload.') }}
-                  </p>
-                  <div v-else class="sidebar-settings-account-list">
-                  <article
-                    v-for="account in accounts"
-                    :key="account.storageId"
-                    class="sidebar-settings-account-item"
-                    :class="{
-                      'is-active': account.isActive,
-                      'is-unavailable': isAccountUnavailable(account),
-                      'is-confirming-remove': isRemoveConfirmationActive(account),
-                      'is-remove-visible': isRemoveVisible(account),
-                    }"
-                    :title="buildAccountTitle(account)"
-                    @mouseenter="onAccountCardPointerEnter(account.storageId)"
-                    @mouseleave="onAccountCardPointerLeave(account.storageId)"
-                  >
-                    <div class="sidebar-settings-account-main">
-                      <p class="sidebar-settings-account-email">{{ account.email || t('Account') }}</p>
-                      <p class="sidebar-settings-account-meta">
-                        {{ formatAccountMeta(account) }}
-                      </p>
-                      <p class="sidebar-settings-account-quota">
-                        {{ formatAccountQuota(account) }}
-                      </p>
-                      <p class="sidebar-settings-account-id">
-                        Workspace {{ shortAccountId(account.accountId) }}
-                      </p>
-                    </div>
-                    <div class="sidebar-settings-account-actions">
-                      <button
-                        class="sidebar-settings-account-switch"
-                        type="button"
-                        :disabled="isAccountActionDisabled(account) || account.isActive || isAccountUnavailable(account)"
-                        @click="onSwitchAccount(account.storageId)"
-                      >
-                        {{ getAccountSwitchLabel(account) }}
-                      </button>
-                      <button
-                        class="sidebar-settings-account-remove"
-                        :class="{
-                          'is-visible': isRemoveVisible(account),
-                          'is-confirming': isRemoveConfirmationActive(account),
-                        }"
-                        type="button"
-                        :disabled="isAccountActionDisabled(account)"
-                        @click="onRemoveAccount(account.storageId)"
-                      >
-                        {{ getAccountRemoveLabel(account) }}
-                      </button>
-                    </div>
-                  </article>
-                  </div>
-                </template>
-              </div>
-              <button class="sidebar-settings-row" type="button" :title="SETTINGS_HELP.sendWithEnter" @click="toggleSendWithEnter">
-                <span class="sidebar-settings-label">{{ t('Require ⌘ + enter to send') }}</span>
-                <span class="sidebar-settings-toggle" :class="{ 'is-on': !sendWithEnter }" />
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="SETTINGS_HELP.inProgressSendMode" @click="cycleInProgressSendMode">
-                <span class="sidebar-settings-label">{{ t('When busy, send as') }}</span>
-                <span class="sidebar-settings-value">{{ inProgressSendMode === 'steer' ? t('Steer') : t('Queue') }}</span>
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="SETTINGS_HELP.appearance" @click="cycleDarkMode">
-                <span class="sidebar-settings-label">{{ t('Appearance') }}</span>
-                <span class="sidebar-settings-value">{{ darkMode === 'system' ? t('System') : darkMode === 'dark' ? t('Dark') : t('Light') }}</span>
-              </button>
-              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the interface language for the app.')">
-                <span class="sidebar-settings-label">{{ t('UI language') }}</span>
-                <ComposerDropdown
-                  class="sidebar-settings-provider-dropdown"
-                  :model-value="uiLanguage"
-                  :options="uiLanguageOptions"
-                  :placeholder="t('UI language')"
-                  menu-align="end"
-                  @update:model-value="setUiLanguage($event as 'en' | 'zh-CN')"
-                />
-              </div>
-              <button class="sidebar-settings-row" type="button" :title="SETTINGS_HELP.chatWidth" @click="cycleChatWidth">
-                <span class="sidebar-settings-label">{{ t('Chat width') }}</span>
-                <span class="sidebar-settings-value">{{ chatWidthLabel }}</span>
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="SETTINGS_HELP.dictationClickToToggle" @click="toggleDictationClickToToggle">
-                <span class="sidebar-settings-label">{{ t('Click to toggle dictation') }}</span>
-                <span class="sidebar-settings-toggle" :class="{ 'is-on': dictationClickToToggle }" />
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="SETTINGS_HELP.dictationAutoSend" @click="toggleDictationAutoSend">
-                <span class="sidebar-settings-label">{{ t('Auto send dictation') }}</span>
-                <span class="sidebar-settings-toggle" :class="{ 'is-on': dictationAutoSend }" />
-              </button>
-              <a
-                v-if="hasVisibleFeedbackError"
-                class="sidebar-settings-row sidebar-settings-feedback-row"
-                :href="feedbackMailto"
-                @click="prepareFeedbackLink"
-              >
-                <span class="sidebar-settings-label">{{ t('Send feedback') }}</span>
-                <span class="sidebar-settings-value">{{ t('Issue detected') }}</span>
-              </a>
+        <div v-if="!isSidebarCollapsed" class="sidebar-account-footer">
+          <div class="sidebar-context-summary" :title="t(threadContextTooltip)" :data-state="threadContextBadgeState">
+            <span>{{ t('当前会话上下文') }}</span>
+            <strong>{{ t(selectedThreadId ? threadContextPrimaryText : '未选择会话') }}</strong>
+            <small>{{ selectedThreadId ? t(threadContextSecondaryText) : '' }}</small>
+          </div>
+          <div ref="settingsAreaRef">
+            <button ref="settingsButtonRef" class="account-usage-button" type="button" :aria-expanded="isSettingsOpen" :aria-label="t('账号与用量')" @click="isSettingsOpen = !isSettingsOpen">
+              <span class="account-usage-heading"><strong>{{ t(activeAccount ? accountDisplayName(activeAccount) : '添加 GPT 账号') }}</strong><span aria-hidden="true">⌃</span></span>
+              <small v-if="activeAccount?.quotaUpdatedAtIso">{{ t('更新于') }} {{ formatLocalDateTime(activeAccount.quotaUpdatedAtIso, { year: undefined, month: undefined, day: undefined, second: '2-digit' }, 'zh-CN') }}</small>
+              <small v-if="activeAccount && (activeAccount.authStatus !== 'ready' || activeAccount.quotaStatus === 'error')" class="account-panel-error">{{ t(activeAccount.quotaError || formatAccountStatus(activeAccount)) }}</small>
+              <AccountQuota v-if="activeAccount?.quotaSnapshot" :snapshot="activeAccount.quotaSnapshot" compact />
+              <small v-else>{{ t(activeAccount ? (activeAccount.quotaStatus === 'loading' ? '正在读取用量…' : '暂无用量数据') : '尚未添加账号') }}</small>
+            </button>
+          </div>
+          <AppPopover :open="isSettingsOpen" :anchor="settingsAreaRef" :width="400" direction="up" panel-class="account-popover" @close="isSettingsOpen = false">
+            <AccountPanel :accounts="accounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
+  @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount">
+              <template #footer><div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div><AppButton @click="openSettings">{{ t('全局设置 →') }}</AppButton></template>
+            </AccountPanel>
+          </AppPopover>
+        </div>
+      </section>
+    </template>
 
-              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the API provider for the Codex backend')">
+    <template #content>
+      <section
+        class="content-root"
+        :class="{
+          'is-virtual-keyboard-open': isTerminalKeyboardLayoutActive,
+          'is-terminal-open': isComposerTerminalOpen,
+        }"
+        :style="contentStyle"
+      >
+        <span v-if="isVirtualKeyboardOpen" class="content-keyboard-spacer" aria-hidden="true" />
+        <ContentHeader :title="contentTitle" :accent="isSkillsRoute || isAutomationsRoute || isApiProxyRoute || isSettingsRoute">
+          <template #leading>
+            <SidebarThreadControls
+              v-if="isSidebarCollapsed || isMobile"
+              class="sidebar-thread-controls-header-host"
+              :is-sidebar-collapsed="isSidebarCollapsed"
+              :show-new-thread-button="false"
+            :theme="darkMode" :settings-active="isSettingsRoute"
+            @cycle-theme="cycleDarkMode" @open-settings="openSettings"
+              @toggle-sidebar="setSidebarCollapsed(!isSidebarCollapsed)"
+              @start-new-thread="onStartNewThreadFromToolbar"
+            ><button class="sidebar-search-toggle" type="button" :aria-label="t('Search threads')" @click="setSidebarCollapsed(false); toggleSidebarSearch()"><IconTablerSearch class="sidebar-search-toggle-icon" /></button></SidebarThreadControls>
+          </template>
+          <template #actions>
+            <ComposerDropdown
+              v-if="canShowTerminalToggle"
+              class="content-header-terminal-command"
+              :class="{ 'is-open': isComposerTerminalOpen }"
+              :model-value="terminalHeaderDropdownValue"
+              :options="terminalHeaderDropdownOptions"
+              :placeholder="terminalCommandPlaceholder"
+              :selected-prefix-icon="IconTablerTerminal"
+              :icon-only="true"
+              menu-align="end"
+              :empty-label="t('No commands')"
+              @update:model-value="onSelectHeaderTerminalCommand"
+            />
+            <HeaderGitBranchDropdown
+              v-if="canShowContentHeaderBranchDropdown"
+              class="content-header-branch-dropdown"
+              :current-branch="currentThreadBranch"
+              :head-sha="currentThreadHeadSha"
+              :head-subject="currentThreadHeadSubject"
+              :head-date="currentThreadHeadDate"
+              :detached="isThreadDetachedHead"
+              :dirty="isThreadWorktreeDirty"
+              :worktree-change-summary="threadWorktreeChangeSummary"
+              :branches="threadBranchOptions"
+              :commits-by-branch="threadBranchCommitsByBranch"
+              :commits-loading-for="threadBranchCommitsLoadingFor"
+              :commits-error="threadBranchCommitsError"
+              :commit-files-by-sha="threadCommitFilesBySha"
+              :commit-files-loading-for="threadCommitFilesLoadingFor"
+              :commit-files-error="threadCommitFilesError"
+              :loading="isLoadingThreadBranches"
+              :busy="isSwitchingThreadBranch"
+              :error="threadBranchError"
+              :review-open="isReviewPaneOpen"
+              :show-review="route.name === 'thread' && selectedThreadId.length > 0"
+              @toggle-review="onToggleContentHeaderReview"
+              @checkout-branch="onCheckoutContentHeaderBranch"
+              @reset-branch-to-commit="onResetContentHeaderBranchToCommit"
+              @load-commits="loadThreadBranchCommits"
+              @load-commit-files="loadThreadCommitFiles"
+              @open-commit-file="onOpenContentHeaderCommitFile"
+            />
+            <button class="header-new-thread" type="button" :aria-label="t('Start new thread')" :title="t('Start new thread')" @click="onStartNewThreadFromToolbar"><IconTablerFilePencil /></button>
+          </template>
+        </ContentHeader>
+
+        <section class="content-body">
+          <template v-if="isSkillsRoute">
+            <DirectoryHub
+              :key="`${directoryCwd}:${directoryThreadId}:${directoryAccountRevision}`"
+              :cwd="directoryCwd"
+              :thread-id="directoryThreadId"
+              :projects="directoryProjects"
+              @scope-change="onDirectoryScopeChange"
+              :try-in-flight-key="directoryTryInFlightKey"
+              @skills-changed="onSkillsChanged"
+              @try-item="onTryDirectoryItem"
+            />
+          </template>
+          <template v-else-if="isAutomationsRoute">
+            <AutomationsPanel
+              ref="automationsPanelRef"
+              :groups="projectGroups"
+              :project-cwd-by-name="projectCwdByName"
+              :project-display-name-by-id="projectDisplayNameById"
+              :selected-automation-id="routeAutomationId"
+              @select-automation="onSelectAutomationInPanel"
+              @edit-automation="onEditAutomationFromPanel"
+              @create-automation="onCreateAutomationFromPanel"
+            />
+          </template>
+          <template v-else-if="isApiProxyRoute"><ApiProxyPanel /></template>
+          <template v-else-if="isSettingsRoute"><SettingsPanel>
+<template #accounts><AccountPanel :accounts="accounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
+  @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount" />
+<AccountActivation :key="displayTimeZonePreference" :accounts="accounts" />
+<details class="settings-optional-provider" :open="selectedProvider !== 'codex'"><summary>{{ t('其他连接（可选）') }}<span v-if="selectedProvider !== 'codex'"> · {{ selectedProvider }}</span></summary>              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the API provider for the Codex backend')">
                 <span class="sidebar-settings-label">{{ t('Provider') }}</span>
-                <ComposerDropdown
+                <AppSelect
                   class="sidebar-settings-provider-dropdown"
                   :model-value="selectedProvider"
                   :options="providerDropdownOptions"
@@ -279,7 +258,7 @@
                 />
               </div>
               <div v-if="providerError" class="sidebar-settings-row sidebar-settings-error">
-                <span>{{ providerError }}</span>
+                <span>{{ t(providerError) }}</span>
                 <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, providerError)">{{ t('Send feedback') }}</a>
               </div>
               <div v-if="selectedProvider === 'openrouter'" class="sidebar-settings-row sidebar-settings-row--input">
@@ -418,9 +397,57 @@
                   </div>
                 </div>
               </div>
-              <div class="sidebar-settings-row sidebar-settings-row--select" :title="SETTINGS_HELP.dictationLanguage">
+</details></template>
+<template #general><ConversationDefaults :value="webDefaultChoice" :remember="webPreferenceState.remember" :models="availableModels" :provider="webDefaultsProvider" :error="webPreferenceError" @save="configureWebDefaults" />              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the interface language for the app.')">
+                <span class="sidebar-settings-label">{{ t('UI language') }}</span>
+                <AppSelect
+                  class="sidebar-settings-provider-dropdown"
+                  :model-value="uiLanguage"
+                  :options="uiLanguageOptions"
+                  :placeholder="t('UI language')"
+                  menu-align="end"
+                  @update:model-value="setUiLanguage($event as 'en' | 'zh-CN')"
+                />
+              </div>
+              <div class="sidebar-settings-row sidebar-settings-timezone">
+                <span class="sidebar-settings-label">{{ t('Display timezone') }}</span>
+                <AppSelect
+                  :model-value="displayTimeZonePreference"
+                  :disabled="isSavingDisplayTimeZone"
+                  :options="displayTimeZoneOptions"
+                  :placeholder="t('Display timezone')"
+                  enable-search
+                  :search-placeholder="t('Search timezones')"
+                  menu-align="end"
+                  @update:model-value="onDisplayTimeZoneChange"
+                />
+                <p v-if="displayTimeZoneError" class="sidebar-timezone-error" role="alert">{{ t(displayTimeZoneError) }}</p>
+              </div>
+</template>
+<template #appearance>              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.appearance)" @click="cycleDarkMode">
+                <span class="sidebar-settings-label">{{ t('Appearance') }}</span>
+                <span class="sidebar-settings-value">{{ darkMode === 'system' ? t('System') : darkMode === 'dark' ? t('Dark') : t('Light') }}</span>
+              </button>
+              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.chatWidth)" @click="cycleChatWidth">
+                <span class="sidebar-settings-label">{{ t('Chat width') }}</span>
+                <span class="sidebar-settings-value">{{ t(chatWidthLabel) }}</span>
+              </button>
+</template>
+<template #input>              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.sendWithEnter)" @click="toggleSendWithEnter">
+                <span class="sidebar-settings-label">{{ t('Require ⌘ + enter to send') }}</span>
+                <span class="sidebar-settings-toggle" :class="{ 'is-on': !sendWithEnter }" />
+              </button>
+              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.dictationClickToToggle)" @click="toggleDictationClickToToggle">
+                <span class="sidebar-settings-label">{{ t('Click to toggle dictation') }}</span>
+                <span class="sidebar-settings-toggle" :class="{ 'is-on': dictationClickToToggle }" />
+              </button>
+              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.dictationAutoSend)" @click="toggleDictationAutoSend">
+                <span class="sidebar-settings-label">{{ t('Auto send dictation') }}</span>
+                <span class="sidebar-settings-toggle" :class="{ 'is-on': dictationAutoSend }" />
+              </button>
+              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t(SETTINGS_HELP.dictationLanguage)">
                 <span class="sidebar-settings-label">{{ t('Dictation language') }}</span>
-                <ComposerDropdown
+                <AppSelect
                   class="sidebar-settings-language-dropdown"
                   :model-value="dictationLanguage"
                   :options="dictationLanguageOptions"
@@ -431,9 +458,11 @@
                   @update:model-value="onDictationLanguageChange"
                 />
               </div>
-              <button class="sidebar-settings-row" type="button" aria-live="polite" @click="isTelegramConfigOpen = !isTelegramConfigOpen">
+</template>
+<template #integrations>
+<AppButton @click="openDirectory()">{{ t('插件 / 技能 / MCP') }}</AppButton><NotificationSettings :key="displayTimeZonePreference" />              <button class="sidebar-settings-row" type="button" aria-live="polite" @click="isTelegramConfigOpen = !isTelegramConfigOpen">
                 <span class="sidebar-settings-label">{{ t('Telegram') }}</span>
-                <span class="sidebar-settings-value">{{ telegramStatusText }}</span>
+                <span class="sidebar-settings-value">{{ t(telegramStatusText) }}</span>
               </button>
               <div v-if="isTelegramConfigOpen" class="sidebar-settings-telegram-panel">
                 <label class="sidebar-settings-field">
@@ -461,7 +490,7 @@
                   {{ t('Put one Telegram user ID per line or separate them with commas. Use `*` to allow all Telegram users. Unauthorized users will see their own ID in the rejection message so they can copy it here.') }}
                 </div>
                 <div v-if="telegramConfigError" class="sidebar-settings-telegram-error">
-                  <span>{{ telegramConfigError }}</span>
+                  <span>{{ t(telegramConfigError) }}</span>
                   <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, telegramConfigError)">{{ t('Send feedback') }}</a>
                 </div>
                 <div class="sidebar-settings-telegram-actions">
@@ -475,137 +504,24 @@
                   </button>
                 </div>
               </div>
-              <div
-                v-if="showThreadContextBadge"
-                class="sidebar-settings-row sidebar-settings-context-row"
-                :data-state="threadContextBadgeState"
-                :title="threadContextTooltip"
+</template>
+<template #about><div class="settings-about-versions"><div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div><p>{{ t('工作树') }} {{ worktreeName }}</p>
+<p v-if="runtimeCapabilities && runtimeCapabilities.appVersion !== appVersion" role="alert">{{ t('前端版本') }} {{ appVersion }} {{ t('与服务端版本不同，请刷新页面。') }}</p></div>
+<details class="runtime-capabilities"><summary>{{ t('运行版本与能力') }}</summary>
+<template v-if="runtimeCapabilities"><p>{{ t('模型：动态目录 · 工具：轻量摘要') }}</p><p>{{ t('异步问题：已接入') }}</p><p>{{ t('原生历史分页：') }}{{ t(runtimeCapabilities.features?.historyPaging ? '可用' : 'CLI 未声明，使用兼容路径') }}</p><p>{{ t('协议') }} {{ t(runtimeCapabilities.experimental ? 'experimental' : '默认') }} · {{ runtimeCapabilities.schemaHash.slice(0,12) }}</p><p>{{ t('CLI 声明') }} {{ runtimeCapabilities.methods.length }} {{ t('个方法，声明数量不代表客户端支持率。') }}</p><p>{{ t('检测时间') }} {{ runtimeCapabilities.generatedAt }}</p></template>
+<p v-if="runtimeCapabilitiesError" role="alert">{{ t(runtimeCapabilitiesError) }}</p>
+<AppButton :busy="runtimeCapabilitiesLoading" @click="loadRuntimeCapabilities">{{ t('重新检测') }}</AppButton></details>              <a
+                v-if="hasVisibleFeedbackError"
+                class="sidebar-settings-row sidebar-settings-feedback-row"
+                :href="feedbackMailto"
+                @click="prepareFeedbackLink"
               >
-                <span class="sidebar-settings-label">{{ t('Context') }}</span>
-                <span class="sidebar-settings-context-value" :data-state="threadContextBadgeState">
-                  {{ threadContextPrimaryText }}
-                  <span class="sidebar-settings-context-meta">{{ threadContextSecondaryText }}</span>
-                </span>
-              </div>
-              <div class="sidebar-settings-rate-limits">
-                <RateLimitStatus :snapshots="accountRateLimitSnapshots" />
-              </div>
-              <div class="sidebar-settings-build-label" :aria-label="t('Worktree name and version')">
-                WT {{ worktreeName }} · v{{ appVersion }}
-              </div>
-            </div>
-          </Transition>
-          <button
-            ref="settingsButtonRef"
-            class="sidebar-settings-button"
-            type="button"
-            @click.stop="isSettingsOpen = !isSettingsOpen"
-          >
-            <IconTablerSettings class="sidebar-settings-icon" />
-            <span>{{ t('Settings') }}</span>
-            <span class="sidebar-settings-button-version">
-              {{ worktreeName }} · v{{ appVersion }}
-            </span>
-          </button>
-        </div>
-      </section>
-    </template>
+                <span class="sidebar-settings-label">{{ t('Send feedback') }}</span>
+                <span class="sidebar-settings-value">{{ t('Issue detected') }}</span>
+              </a>
 
-    <template #content>
-      <section
-        class="content-root"
-        :class="{
-          'is-virtual-keyboard-open': isTerminalKeyboardLayoutActive,
-          'is-terminal-open': isComposerTerminalOpen,
-        }"
-        :style="contentStyle"
-      >
-        <span v-if="isVirtualKeyboardOpen" class="content-keyboard-spacer" aria-hidden="true" />
-        <ContentHeader :title="contentTitle" :accent="isSkillsRoute || isAutomationsRoute">
-          <template #leading>
-            <SidebarThreadControls
-              v-if="isSidebarCollapsed || isMobile"
-              class="sidebar-thread-controls-header-host"
-              :is-sidebar-collapsed="isSidebarCollapsed"
-              :show-new-thread-button="true"
-              @toggle-sidebar="setSidebarCollapsed(!isSidebarCollapsed)"
-              @start-new-thread="onStartNewThreadFromToolbar"
-            />
-            <span v-if="isSkillsRoute" class="skills-route-header-icon" aria-hidden="true">
-              <IconTablerBolt />
-            </span>
-            <span v-else-if="isAutomationsRoute" class="skills-route-header-icon automations-route-header-icon" aria-hidden="true">
-              <IconTablerBolt />
-            </span>
-          </template>
-          <template #actions>
-            <ComposerDropdown
-              v-if="canShowTerminalToggle"
-              class="content-header-terminal-command"
-              :class="{ 'is-open': isComposerTerminalOpen }"
-              :model-value="terminalHeaderDropdownValue"
-              :options="terminalHeaderDropdownOptions"
-              :placeholder="terminalCommandPlaceholder"
-              :selected-prefix-icon="IconTablerTerminal"
-              :icon-only="true"
-              menu-align="end"
-              :empty-label="t('No commands')"
-              @update:model-value="onSelectHeaderTerminalCommand"
-            />
-            <HeaderGitBranchDropdown
-              v-if="canShowContentHeaderBranchDropdown"
-              class="content-header-branch-dropdown"
-              :current-branch="currentThreadBranch"
-              :head-sha="currentThreadHeadSha"
-              :head-subject="currentThreadHeadSubject"
-              :head-date="currentThreadHeadDate"
-              :detached="isThreadDetachedHead"
-              :dirty="isThreadWorktreeDirty"
-              :worktree-change-summary="threadWorktreeChangeSummary"
-              :branches="threadBranchOptions"
-              :commits-by-branch="threadBranchCommitsByBranch"
-              :commits-loading-for="threadBranchCommitsLoadingFor"
-              :commits-error="threadBranchCommitsError"
-              :commit-files-by-sha="threadCommitFilesBySha"
-              :commit-files-loading-for="threadCommitFilesLoadingFor"
-              :commit-files-error="threadCommitFilesError"
-              :loading="isLoadingThreadBranches"
-              :busy="isSwitchingThreadBranch"
-              :error="threadBranchError"
-              :review-open="isReviewPaneOpen"
-              :show-review="route.name === 'thread' && selectedThreadId.length > 0"
-              @toggle-review="onToggleContentHeaderReview"
-              @checkout-branch="onCheckoutContentHeaderBranch"
-              @reset-branch-to-commit="onResetContentHeaderBranchToCommit"
-              @load-commits="loadThreadBranchCommits"
-              @load-commit-files="loadThreadCommitFiles"
-              @open-commit-file="onOpenContentHeaderCommitFile"
-            />
-          </template>
-        </ContentHeader>
-
-        <section class="content-body">
-          <template v-if="isSkillsRoute">
-            <DirectoryHub
-              :cwd="directoryCwd"
-              :thread-id="routeThreadId"
-              :try-in-flight-key="directoryTryInFlightKey"
-              @skills-changed="onSkillsChanged"
-              @try-item="onTryDirectoryItem"
-            />
-          </template>
-          <template v-else-if="isAutomationsRoute">
-            <AutomationsPanel
-              ref="automationsPanelRef"
-              :groups="projectGroups"
-              :project-cwd-by-name="projectCwdByName"
-              :project-display-name-by-id="projectDisplayNameById"
-              :selected-automation-id="routeAutomationId"
-              @select-automation="onSelectAutomationInPanel"
-              @edit-automation="onEditAutomationFromPanel"
-              @create-automation="onCreateAutomationFromPanel"
-            />
-          </template>
+</template>
+</SettingsPanel></template>
           <template v-else-if="isHomeRoute">
             <div class="content-grid content-grid-home">
               <div class="new-thread-empty">
@@ -613,11 +529,8 @@
                 <ComposerDropdown class="new-thread-folder-dropdown" :model-value="newThreadCwd"
                   :options="newThreadFolderOptions" :placeholder="t('Choose folder')"
                   :enable-search="true"
-                  :search-placeholder="t('Quick search project')"
+                  :search-placeholder="t('Search projects')"
                   :disabled="false" @update:model-value="onSelectNewThreadFolder" />
-                <p v-if="newThreadCwd" class="new-thread-folder-selected" :title="newThreadCwd">
-                  {{ t('Selected folder') }}: {{ newThreadCwd }}
-                </p>
                 <div class="new-thread-folder-actions">
                   <button class="new-thread-folder-action new-thread-folder-action-primary" type="button" @click="onOpenExistingFolder">
                     {{ t('Select folder') }}
@@ -638,37 +551,9 @@
                     @change="onDirectProjectImportFileChange"
                   />
                 </div>
-                <section v-if="showFirstLaunchPluginsCard" class="new-thread-launch-card" aria-label="Plugins and Apps announcement">
-                  <div class="new-thread-launch-card-copy">
-                    <div class="new-thread-launch-card-topline">
-                      <span class="new-thread-launch-card-badge" aria-hidden="true">
-                        <IconTablerBolt />
-                      </span>
-                      <p class="new-thread-launch-card-eyebrow">{{ t('New in Codex') }}</p>
-                    </div>
-                    <h2 class="new-thread-launch-card-title">{{ t('Plugins are here') }}</h2>
-                    <p class="new-thread-launch-card-text">
-                      {{ t('Hook Codex up to Gmail, Calendar, GitHub, Slack, Browser Use, and more so it can actually help with real work right away.') }}
-                    </p>
-                    <div class="new-thread-launch-card-pills" aria-label="Example integrations">
-                      <span class="new-thread-launch-card-pill">Gmail</span>
-                      <span class="new-thread-launch-card-pill">Calendar</span>
-                      <span class="new-thread-launch-card-pill">GitHub</span>
-                      <span class="new-thread-launch-card-pill">Slack</span>
-                      <span class="new-thread-launch-card-pill">Browser Use</span>
-                    </div>
-                  </div>
-                  <div class="new-thread-launch-card-actions">
-                    <button class="new-thread-launch-card-button new-thread-launch-card-button-primary" type="button" @click="onOpenPluginsHomeCard">
-                      {{ t('Explore Plugins & Apps') }}
-                    </button>
-                    <button class="new-thread-launch-card-button" type="button" @click="dismissFirstLaunchPluginsCard">
-                      {{ t('Dismiss') }}
-                    </button>
-                  </div>
-                </section>
+
                 <Teleport to="body">
-                  <div v-if="isExistingFolderPickerOpen" class="new-thread-open-folder-overlay" @click.self="onCloseExistingFolderPanel">
+                  <div v-if="isExistingFolderPickerOpen" class="new-thread-open-folder-overlay" v-modal-backdrop="() => { if (!isCreatingFolder && !isOpeningExistingFolder) onCloseExistingFolderPanel() }">
                     <div class="new-thread-open-folder" role="dialog" aria-modal="true" :aria-label="t('Select folder')" @keydown.esc.prevent="onCloseExistingFolderPanel">
                       <div class="new-thread-open-folder-header">
                         <p class="new-thread-open-folder-title">{{ t('Select folder') }}</p>
@@ -737,11 +622,11 @@
                             :disabled="!canCreateFolder || isCreatingFolder"
                             @click="onCreateFolder"
                           >
-                            {{ createFolderSubmitLabel }}
+                            {{ t(createFolderSubmitLabel) }}
                           </button>
                         </div>
                         <div v-if="createFolderError" class="new-thread-open-folder-error visible-error-with-feedback">
-                          <span>{{ createFolderError }}</span>
+                          <span>{{ t(createFolderError) }}</span>
                           <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, createFolderError)">{{ t('Send feedback') }}</a>
                         </div>
                       </div>
@@ -755,7 +640,7 @@
                       />
                       <div v-if="existingFolderError" class="new-thread-open-folder-error-actions">
                         <div class="new-thread-open-folder-error visible-error-with-feedback">
-                          <span>{{ existingFolderError }}</span>
+                          <span>{{ t(existingFolderError) }}</span>
                           <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, existingFolderError)">{{ t('Send feedback') }}</a>
                         </div>
                         <button
@@ -796,93 +681,6 @@
                     </div>
                   </div>
                 </Teleport>
-                <Teleport to="body">
-                  <div v-if="isProjectSetupModalOpen" class="new-thread-open-folder-overlay" @click.self="onCloseProjectSetupModal">
-                    <div class="new-thread-project-modal" role="dialog" aria-modal="true" :aria-label="t('Create or clone project')" @keydown.esc.prevent="onCloseProjectSetupModal">
-                      <div class="new-thread-open-folder-header">
-                        <p class="new-thread-open-folder-title">{{ t('Create or clone project') }}</p>
-                        <button class="new-thread-open-folder-close" type="button" :disabled="isProjectSetupSubmitting" @click="onCloseProjectSetupModal">
-                          {{ t('Cancel') }}
-                        </button>
-                      </div>
-                      <div class="new-thread-project-mode-tabs" role="tablist" :aria-label="t('Project source')">
-                        <button
-                          class="new-thread-project-mode-tab"
-                          :class="{ 'is-active': projectSetupMode === 'create' }"
-                          type="button"
-                          role="tab"
-                          :aria-selected="projectSetupMode === 'create'"
-                          :disabled="isProjectSetupSubmitting"
-                          @click="projectSetupMode = 'create'"
-                        >
-                          {{ t('New project') }}
-                        </button>
-                        <button
-                          class="new-thread-project-mode-tab"
-                          :class="{ 'is-active': projectSetupMode === 'clone' }"
-                          type="button"
-                          role="tab"
-                          :aria-selected="projectSetupMode === 'clone'"
-                          :disabled="isProjectSetupSubmitting"
-                          @click="projectSetupMode = 'clone'"
-                        >
-                          {{ t('Clone from GitHub') }}
-                        </button>
-                      </div>
-                      <label class="new-thread-project-field">
-                        <span class="new-thread-open-folder-label">{{ t('Destination folder') }}</span>
-                        <input
-                          v-model="projectSetupBaseDir"
-                          class="new-thread-open-folder-path"
-                          type="text"
-                          :disabled="isProjectSetupSubmitting"
-                          :placeholder="t('Destination folder')"
-                        />
-                      </label>
-                      <label v-if="projectSetupMode === 'create'" class="new-thread-project-field">
-                        <span class="new-thread-open-folder-label">{{ t('Project name') }}</span>
-                        <input
-                          ref="projectSetupPrimaryInputRef"
-                          v-model="projectNameDraft"
-                          class="new-thread-open-folder-create-input"
-                          type="text"
-                          :disabled="isProjectSetupSubmitting"
-                          :placeholder="t('Project name')"
-                          @keydown.enter.prevent="onSubmitProjectSetup"
-                        />
-                      </label>
-                      <label v-else-if="projectSetupMode === 'clone'" class="new-thread-project-field">
-                        <span class="new-thread-open-folder-label">{{ t('GitHub repository URL') }}</span>
-                        <input
-                          ref="projectSetupPrimaryInputRef"
-                          v-model="githubCloneUrlDraft"
-                          class="new-thread-open-folder-create-input"
-                          type="url"
-                          :disabled="isProjectSetupSubmitting"
-                          placeholder="https://github.com/owner/repo"
-                          @keydown.enter.prevent="onSubmitProjectSetup"
-                        />
-                      </label>
-                      <div v-if="projectSetupError" class="new-thread-open-folder-error visible-error-with-feedback">
-                        <span>{{ projectSetupError }}</span>
-                        <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, projectSetupError)">{{ t('Send feedback') }}</a>
-                      </div>
-                      <div class="new-thread-project-modal-actions">
-                        <button class="new-thread-folder-action" type="button" :disabled="isProjectSetupSubmitting" @click="onCloseProjectSetupModal">
-                          {{ t('Cancel') }}
-                        </button>
-                        <button
-                          class="new-thread-folder-action new-thread-folder-action-primary"
-                          type="button"
-                          :disabled="!canSubmitProjectSetup || isProjectSetupSubmitting"
-                          @click="onSubmitProjectSetup"
-                        >
-                          {{ projectSetupSubmitLabel }}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </Teleport>
                 <ComposerRuntimeDropdown
                   v-if="isNewThreadCwdGitRepo"
                   class="new-thread-runtime-dropdown"
@@ -910,9 +708,6 @@
                     }}
                   </p>
                 </div>
-                <p v-if="isNewThreadCwdGitRepo" class="new-thread-runtime-help">
-                  {{ t('Local project uses the selected folder directly. New worktree creates an isolated Git worktree before the first prompt.') }}
-                </p>
                 <div
                   v-if="worktreeInitStatus.phase !== 'idle'"
                   class="worktree-init-status"
@@ -921,8 +716,8 @@
                     'is-error': worktreeInitStatus.phase === 'error',
                   }"
                 >
-                  <strong class="worktree-init-status-title">{{ worktreeInitStatus.title }}</strong>
-                  <span class="worktree-init-status-message">{{ worktreeInitStatus.message }}</span>
+                  <strong class="worktree-init-status-title">{{ t(worktreeInitStatus.title) }}</strong>
+                  <span class="worktree-init-status-message">{{ t(worktreeInitStatus.message) }}</span>
                 </div>
               </div>
 
@@ -941,22 +736,22 @@
                   @terminal-focus-change="onTerminalFocusChange"
                 />
                 <ThreadComposer ref="homeThreadComposerRef" :active-thread-id="composerThreadContextId"
+                  :disabled="isSwitchingAccounts"
                   :cwd="composerCwd"
                   :collaboration-modes="availableCollaborationModes"
                   :selected-collaboration-mode="selectedCollaborationMode"
-                  :models="availableModelIds" :selected-model="composerSelectedModelId"
-                  :selected-reasoning-effort="selectedReasoningEffort"
+                  :models="availableModelIds" :model-capabilities="availableModels" :selected-model="composerSelectedModelId"
+                  :selected-reasoning-effort="selectedReasoningEffort" :model-catalog-error="modelCatalogError" :reported-model="reportedModel"
                   :selected-speed-mode="selectedSpeedMode"
                   :is-updating-speed-mode="isUpdatingSpeedMode"
                   :skills="installedSkills"
                   :thread-token-usage="selectedThreadTokenUsage"
-                  :codex-quota="codexQuota"
                   :is-turn-in-progress="false"
                   :is-stop-pending="false"
-                  :is-interrupting-turn="false" :send-with-enter="sendWithEnter" :in-progress-submit-mode="inProgressSendMode"
+                  :is-interrupting-turn="false" :send-with-enter="sendWithEnter"
                   :dictation-click-to-toggle="dictationClickToToggle" :dictation-auto-send="dictationAutoSend"
                   :dictation-language="dictationLanguage"
-                  @submit="onSubmitThreadMessage"
+                  @command="onComposerCommand" @submit="onSubmitThreadMessage"
                   @update:selected-collaboration-mode="onSelectCollaborationMode"
                   @update:selected-model="onSelectModel"
                   @update:selected-reasoning-effort="onSelectReasoningEffort"
@@ -978,6 +773,13 @@
 
               <template v-else>
                 <div class="content-thread">
+                  <p v-if="threadGoalsError" class="thread-goal-read-error" role="alert">{{ t(threadGoalsError) }} <AppButton @click="refreshThreadGoals">{{ t('重新读取') }}</AppButton></p>
+                  <p v-if="pendingCompactionRequest" class="thread-compaction-pending" role="status">{{ t('压缩请求等待确认。') }}<AppButton @click="onComposerCommand({ name: 'compact', complete: () => {} })">{{ t('检查压缩') }}</AppButton></p>
+                  <ThreadTasksPanel :thread-id="selectedThreadId" :identity="selectedThread?.task || null" @return-task="onReturnTask" @open-task="onOpenRelatedTask" @search-tasks="isTaskSearchOpen = true">
+                    <template #tools><ThreadProcessPanel :key="`${selectedThreadId}:${composerCwd}:${directoryAccountRevision}`" :thread-id="selectedThreadId" :cwd="composerCwd" /></template>
+                  </ThreadTasksPanel>
+                  <AppButton v-if="taskReturnId" class="task-return-button" @click="onReturnTask(taskReturnId)">{{ t('返回原会话') }}</AppButton>
+                  <ThreadGoalCard v-if="selectedGoal" :goal="selectedGoal" @manage="onComposerCommand({ name: 'goal', complete: () => {} })" />
                   <ThreadConversation ref="threadConversationRef" :messages="filteredMessages" :is-loading="isLoadingMessages"
                     :active-thread-id="composerThreadContextId" :cwd="composerCwd"
                     :live-overlay="liveOverlay"
@@ -985,22 +787,39 @@
                     :has-more-persisted-above="hasMoreOlderMessages"
                     :is-loading-persisted-above="isLoadingOlderMessages"
                     :load-earlier-messages="loadOlderMessages"
+                    :answer-questions="answerAsyncQuestions"
+                    @open-task="onOpenRelatedTask"
                     @fork-thread="onForkThreadFromMessage"
                     @rollback="onRollback"
                     @implement-plan="onImplementPlan"
-                    @respond-server-request="onRespondServerRequest" />
+                    />
                 </div>
 
                 <div class="composer-with-queue">
+                  <p v-if="selectedAuthRecovery" class="thread-auth-recovery" role="status">
+                    {{ t(selectedAuthRecovery.phase === 'started' ? '正在恢复凭据' : '凭据恢复已结束') }}
+                    <span v-if="selectedAuthRecovery.message"> · {{ t(selectedAuthRecovery.message) }}</span>
+                  </p>
                   <div v-if="codexCliMissingError" class="composer-runtime-error" role="alert">
                     <span>{{ t(codexCliMissingError) }}</span>
                     <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, codexCliMissingError)">{{ t('Send feedback') }}</a>
+                  </div>
+                  <p v-if="selectedThreadQueueError" class="composer-runtime-error" role="alert">{{ t(selectedThreadQueueError) }}</p>
+                  <p v-if="threadHistoryActionError" class="composer-runtime-error" role="alert">{{ t(threadHistoryActionError) }}</p>
+                  <DeliveryOutbox :thread-id="selectedThreadId" :queue="selectedThreadQueuedMessages" @settled="onDeliveryAcknowledged" />
+                  <p v-if="queueDraftError" class="composer-runtime-error" role="alert">{{ t(queueDraftError) }}</p>
+                  <div v-if="editingQueuedMessageState" class="queue-edit-notice" role="status">
+                    <span>{{ t('正在编辑队列消息') }}</span>
+                    <AppButton @click="resumeQueuedMessage(editingQueuedMessageState.messageId)">{{ t('取消编辑') }}</AppButton>
                   </div>
                   <QueuedMessages
                     :messages="selectedThreadQueuedMessages"
                     @edit="onEditQueuedMessage"
                     @steer="steerQueuedMessage"
-                    @delete="removeQueuedMessage"
+                    @delete="deleteQueuedMessage"
+                    @resume="resumeQueuedMessage"
+                    @reconcile="changeQueuedMessage($event, 'reconcile')"
+                    @abandon="changeQueuedMessage($event, 'abandon')"
                     @reorder="onReorderQueuedMessage"
                   />
                   <ThreadTerminalPanel
@@ -1013,36 +832,39 @@
                     @terminal-focus-change="onTerminalFocusChange"
                   />
                   <ThreadPendingRequestPanel
-                    v-if="selectedThreadPendingRequest"
-                    :request="selectedThreadPendingRequest"
+                    v-for="request in visiblePendingRequests"
+                    :key="`${request.threadId}:${request.id}`"
+                    :request="request"
+                    :busy="pendingReplyIds.has(request.id)"
                     :request-count="selectedThreadServerRequests.length"
                     :has-queue-above="selectedThreadQueuedMessages.length > 0"
                     @respond-server-request="onRespondServerRequest"
                   />
                   <ThreadComposer
-                    v-else
+                    v-if="!selectedThreadPendingRequest || isAsyncUserInputRequest(selectedThreadPendingRequest)"
                     ref="threadComposerRef"
+                    :disabled="isSwitchingAccounts || selectedThread?.task?.canAcceptDirectInput === false"
                     :active-thread-id="composerThreadContextId"
+                    :draft-key="editingQueuedMessageState?.draftKey"
                     :cwd="composerCwd"
                     :collaboration-modes="availableCollaborationModes"
                     :selected-collaboration-mode="selectedCollaborationMode"
-                    :models="availableModelIds"
+                    :models="availableModelIds" :model-capabilities="availableModels"
                     :selected-model="composerSelectedModelId"
-                    :selected-reasoning-effort="selectedReasoningEffort"
+                    :selected-reasoning-effort="selectedReasoningEffort" :model-catalog-error="modelCatalogError" :reported-model="reportedModel"
                     :selected-speed-mode="selectedSpeedMode"
                     :is-updating-speed-mode="isUpdatingSpeedMode"
                     :skills="installedSkills"
                     :thread-token-usage="selectedThreadTokenUsage"
-                    :codex-quota="codexQuota"
                     :is-turn-in-progress="isSelectedThreadInProgress"
                     :is-stop-pending="isSelectedThreadInterruptPending"
                     :is-interrupting-turn="isInterruptingTurn"
                     :has-queue-above="selectedThreadQueuedMessages.length > 0"
-                    :send-with-enter="sendWithEnter" :in-progress-submit-mode="inProgressSendMode"
+                    :send-with-enter="sendWithEnter"
                     :dictation-click-to-toggle="dictationClickToToggle" :dictation-auto-send="dictationAutoSend"
                     :dictation-language="dictationLanguage"
                     @update:selected-collaboration-mode="onSelectCollaborationMode"
-                    @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
+                    @command="onComposerCommand" @submit="onSubmitThreadMessage" @update:selected-model="onSelectModel"
                     @update:selected-reasoning-effort="onSelectReasoningEffort"
                     @update:selected-speed-mode="onSelectSpeedMode"
                     @interrupt="onInterruptTurn" />
@@ -1054,6 +876,15 @@
       </section>
     </template>
   </DesktopLayout>
+  <TaskSearchDialog :open="isTaskSearchOpen" :allow-insert="!isSwitchingAccounts && selectedThread?.task?.canAcceptDirectInput !== false" @close="isTaskSearchOpen = false" @open-task="onOpenRelatedTask" @insert="onInsertTaskExcerpt" />
+  <ThreadCommandDialog
+    v-if="appCommandRequest" :request="appCommandRequest"
+    :thread-id="isHomeRoute ? '' : selectedThreadId || ''" :thread-name="isHomeRoute ? '' : selectedThread?.title || ''"
+    :cwd="composerCwd" :model="composerSelectedModelId" :effort="selectedReasoningEffort"
+    :busy="isSelectedThreadInProgress" :context-summary="commandContextSummary" :models="availableModels"
+    @model-change="onGoalModelChange"
+    :run="runAppCommand" :ensure-thread="ensureCommandThread" @goal-change="updateThreadGoal" @close="appCommandRequest = null"
+  />
   <div v-if="projectZipExportStatus.phase !== 'idle'" class="project-zip-modal-backdrop" role="presentation">
     <div class="project-zip-modal" role="dialog" aria-modal="true" :aria-label="t('Export Project')" @click.stop>
       <div class="project-zip-modal-header">
@@ -1073,13 +904,13 @@
       </p>
       <div class="project-zip-progress-label" role="status" aria-live="polite">
         <span>{{ projectZipExportStatus.phase === 'exporting' ? t('Exporting') : t('Ready') }}</span>
-        <span>{{ projectZipProgressText }}</span>
+        <span>{{ t(projectZipProgressText) }}</span>
       </div>
       <div class="project-zip-progress-track">
         <div class="project-zip-progress-fill" :style="{ width: projectZipProgressWidth }" />
       </div>
       <p v-if="projectZipExportStatus.error" class="project-zip-modal-error" role="alert">
-        {{ projectZipExportStatus.error }}
+        {{ t(projectZipExportStatus.error) }}
       </p>
       <div class="project-zip-modal-actions">
         <button class="project-zip-modal-cancel" type="button" :disabled="projectZipExportStatus.phase === 'exporting'" @click="onCloseProjectZipExportModal">
@@ -1094,85 +925,131 @@
       </div>
     </div>
   </div>
-  <div
-    v-if="isCodexLoginModalOpen"
-    class="codex-login-modal-backdrop"
-    role="presentation"
-    @click="onCancelCodexLoginModal"
-  >
-    <form
-      class="codex-login-modal"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="t('Complete Codex login')"
-      @submit.prevent="onSubmitCodexLoginCallback"
-      @click.stop
-    >
-      <div class="codex-login-modal-header">
-        <h2 class="codex-login-modal-title">{{ t('Complete Codex login') }}</h2>
-        <button
-          class="codex-login-modal-close"
-          type="button"
-          :aria-label="t('Close')"
-          :disabled="isCompletingCodexLogin"
-          @click="onCancelCodexLoginModal"
-        >
-          ×
-        </button>
-      </div>
-      <p class="codex-login-modal-copy">
-        {{ t('Finish login in the browser, then paste the localhost callback URL here.') }}
-      </p>
-      <a
-        v-if="codexLoginUrl"
-        class="codex-login-modal-link"
-        :href="codexLoginUrl"
-        target="_blank"
-        rel="noreferrer"
-      >
-        {{ t('Open login URL') }}
-      </a>
-      <input
-        ref="codexLoginCallbackInputRef"
-        v-model="codexLoginCallbackUrl"
-        class="codex-login-modal-input"
-        type="url"
-        inputmode="url"
-        :placeholder="t('Paste localhost callback URL')"
-        :disabled="isCompletingCodexLogin"
-      >
-      <div v-if="accountActionError" class="codex-login-modal-error visible-error-with-feedback">
-        <span>{{ accountActionError }}</span>
-        <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, accountActionError)">{{ t('Send feedback') }}</a>
-      </div>
-      <div class="codex-login-modal-actions">
-        <button
-          class="codex-login-modal-cancel"
-          type="button"
-          :disabled="isCompletingCodexLogin"
-          @click="onCancelCodexLoginModal"
-        >
-          {{ t('Cancel') }}
-        </button>
-        <button
-          class="codex-login-modal-submit"
-          type="submit"
-          :disabled="isCompletingCodexLogin || codexLoginCallbackUrl.trim().length === 0"
-        >
-          {{ isCompletingCodexLogin ? t('Completing…') : t('Complete') }}
-        </button>
-      </div>
-    </form>
-  </div>
+  <AccountLoginDialog :open="isCodexLoginModalOpen" :intent="loginIntent" :target-storage-id="loginTargetStorageId" :target-label="loginTargetAccount ? accountDisplayName(loginTargetAccount) : ''" @close="isCodexLoginModalOpen = false" @completed="onAccountLoginCompleted" @resume="resumeAccountLogin" />
+  <AppDialog :open="isProjectSetupModalOpen" :title="t(projectEditingId ? '编辑项目' : t('Create or clone project'))" :busy="isProjectSetupSubmitting" @close="onCloseProjectSetupModal">
+                      <div v-if="!projectEditingId" class="new-thread-project-mode-tabs" role="tablist" :aria-label="t('Project source')">
+                        <button
+                          class="new-thread-project-mode-tab"
+                          :class="{ 'is-active': projectSetupMode === 'create' }"
+                          type="button"
+                          role="tab"
+                          :aria-selected="projectSetupMode === 'create'"
+                          :disabled="isProjectSetupSubmitting"
+                          @click="projectSetupMode = 'create'"
+                        >
+                          {{ t('New project') }}
+                        </button>
+                        <button
+                          class="new-thread-project-mode-tab"
+                          :class="{ 'is-active': projectSetupMode === 'clone' }"
+                          type="button"
+                          role="tab"
+                          :aria-selected="projectSetupMode === 'clone'"
+                          :disabled="isProjectSetupSubmitting"
+                          @click="projectSetupMode = 'clone'"
+                        >
+                          {{ t('Clone from GitHub') }}
+                        </button>
+                      </div>
+                      <label class="new-thread-project-field">
+                        <span class="new-thread-open-folder-label">{{ projectSetupMode === 'create' ? t('Target folder') : t('Clone parent folder') }}</span>
+                        <input
+                          v-model="projectSetupDestination"
+                          class="new-thread-open-folder-path"
+                          type="text"
+                          :disabled="isProjectSetupSubmitting || Boolean(projectEditingId)"
+                          :placeholder="projectSetupMode === 'create' ? t('Target folder') : t('Clone parent folder')"
+                        />
+                      </label>
+                      <label v-if="projectSetupMode === 'create'" class="new-thread-project-field">
+                        <span class="new-thread-open-folder-label">{{ t('Project name') }}</span>
+                        <input
+                          ref="projectSetupPrimaryInputRef"
+                          v-model="projectNameDraft"
+                          class="new-thread-open-folder-create-input"
+                          type="text"
+                          :disabled="isProjectSetupSubmitting"
+                          :placeholder="t('Project name')"
+                          @input="projectNameEdited = true"
+                          @keydown.enter.prevent="onSubmitProjectSetup"
+                        />
+                      </label>
+                      <label v-else-if="projectSetupMode === 'clone'" class="new-thread-project-field">
+                        <span class="new-thread-open-folder-label">{{ t('GitHub repository URL') }}</span>
+                        <input
+                          ref="projectSetupPrimaryInputRef"
+                          v-model="githubCloneUrlDraft"
+                          class="new-thread-open-folder-create-input"
+                          type="url"
+                          :disabled="isProjectSetupSubmitting"
+                          placeholder="https://github.com/owner/repo"
+                          @keydown.enter.prevent="onSubmitProjectSetup"
+                        />
+                      </label>
+                      <label v-if="projectSetupMode === 'create'" class="new-thread-project-field">
+                        <span class="new-thread-open-folder-label">{{ t('附加工作目录') }}</span>
+                        <textarea v-model="projectDirectoryDraft" class="new-thread-open-folder-path project-directories-input" rows="4" :disabled="isProjectSetupSubmitting || !projectDirectoriesLoaded" :placeholder="'/workspace/project1\n/workspace/project2'" />
+                      </label>
+                      <div v-if="projectSetupError" class="new-thread-open-folder-error visible-error-with-feedback">
+                        <span>{{ t(projectSetupError) }}</span>
+                        <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, projectSetupError)">{{ t('Send feedback') }}</a>
+                      </div>
+    <template #footer>
+      <AppButton :disabled="isProjectSetupSubmitting" @click="onCloseProjectSetupModal">{{ t('Cancel') }}</AppButton>
+      <AppButton :disabled="!canSubmitProjectSetup" :busy="isProjectSetupSubmitting" @click="onSubmitProjectSetup">{{ t(projectSetupSubmitLabel) }}</AppButton>
+    </template>
+  </AppDialog>
+  <AppDialog :open="Boolean(replaceQueueDraftId)" :title="t('替换当前草稿？')" size="compact" @close="replaceQueueDraftId = ''">
+    <p>{{ t('用这条队列消息替换输入框中的草稿。') }}</p>
+    <template #footer>
+      <AppButton @click="replaceQueueDraftId = ''">{{ t('保留草稿') }}</AppButton>
+      <AppButton @click="hydrateQueuedMessage(replaceQueueDraftId)">{{ t('替换并编辑') }}</AppButton>
+    </template>
+  </AppDialog>
 </template>
 
 <script setup lang="ts">
+import type { UiProjectGroup } from './types/codex'
+import { useTransientNotice } from './composables/useTransientNotice'
+import { accountDisplayName } from './accountDisplay'
+import AppDialog from './components/common/AppDialog.vue'
+import NotificationSettings from './components/settings/NotificationSettings.vue'
+import AccountActivation from './components/settings/AccountActivation.vue'
+import ConversationDefaults from './components/settings/ConversationDefaults.vue'
+import SettingsPanel from './components/settings/SettingsPanel.vue'
+import IconTablerFilePencil from './components/icons/IconTablerFilePencil.vue'
+import AccountQuota from './components/accounts/AccountQuota.vue'
+import AccountPanel from './components/accounts/AccountPanel.vue'
+import AppPopover from './components/common/AppPopover.vue'
+import AccountLoginDialog from './components/accounts/AccountLoginDialog.vue'
+import type { AccountLoginCompleteResult } from './api/codexGateway'
+import AppButton from './components/common/AppButton.vue'
+import DeliveryOutbox from './components/content/DeliveryOutbox.vue'
+import type { PendingWebDelivery } from './api/deliveryOutbox'
+import { createDeliveryId } from './delivery'
+
+import { isAsyncUserInputRequest, pendingRequestPriority } from './userQuestions'
+import { isOverlayEventInside } from './composables/overlayEvents'
+import { availableDisplayTimeZones, browserTimeZone, displayTimeZone, displayTimeZonePreference, formatLocalDateTime, setDisplayTimeZone, subscribeDisplayTimeZoneStorage } from './dateTime'
+import AppSelect from './components/common/AppSelect.vue'
+import { vModalBackdrop } from './composables/modalBackdrop'
+import { getProjectDirectories } from './api/codexGateway'
+import { projectDisplayName, projectSetupInput } from './composables/projectSetup'
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
+import ThreadGoalCard from './components/content/ThreadGoalCard.vue'
+import ThreadTasksPanel from './components/content/ThreadTasksPanel.vue'
+import ThreadProcessPanel from './components/content/ThreadProcessPanel.vue'
+import TaskSearchDialog from './components/content/TaskSearchDialog.vue'
+import { taskId } from './subtasks'
+import { compactionRequests } from './api/threadCompaction'
+import { useAccountQuotaUpdates } from './composables/useAccountQuotaUpdates'
+import { useQuotaResume } from './composables/useQuotaResume'
+import { useThreadGoals } from './composables/useThreadGoals'
 import ThreadPendingRequestPanel from './components/content/ThreadPendingRequestPanel.vue'
 import QueuedMessages from './components/content/QueuedMessages.vue'
 import RateLimitStatus from './components/content/RateLimitStatus.vue'
@@ -1180,7 +1057,9 @@ import ComposerDropdown from './components/content/ComposerDropdown.vue'
 import HeaderGitBranchDropdown from './components/content/HeaderGitBranchDropdown.vue'
 import ComposerRuntimeDropdown from './components/content/ComposerRuntimeDropdown.vue'
 import SidebarThreadControls from './components/sidebar/SidebarThreadControls.vue'
+import IconTablerPlug from './components/icons/IconTablerPlug.vue'
 import IconTablerBolt from './components/icons/IconTablerBolt.vue'
+import IconTablerClock from './components/icons/IconTablerClock.vue'
 import IconTablerSearch from './components/icons/IconTablerSearch.vue'
 import IconTablerSettings from './components/icons/IconTablerSettings.vue'
 import IconTablerTerminal from './components/icons/IconTablerTerminal.vue'
@@ -1190,6 +1069,8 @@ import { useMobile } from './composables/useMobile'
 import { useUiLanguage } from './composables/useUiLanguage'
 import { useFeedbackDiagnostics } from './composables/useFeedbackDiagnostics'
 import {
+  startThread,
+  startThreadReview,
   checkoutGitBranch,
   cloneGithubRepository,
   configureTelegramBot,
@@ -1204,9 +1085,7 @@ import {
   getReviewSummary,
   getWorktreeBranchOptions,
   getAccounts,
-  completeCodexLogin,
   createLocalDirectory,
-  getFirstLaunchPluginsCardPreference,
   getHomeDirectory,
   getTelegramConfig,
   getProjectRootSuggestion,
@@ -1217,11 +1096,10 @@ import {
   importProjectZip,
   listLocalDirectories,
   openProjectRoot,
-  persistFirstLaunchPluginsCardPreference,
   removeAccount,
   refreshAccountsFromAuth,
+  refreshAccountQuota,
   resetGitBranchToCommit,
-  startCodexLogin,
   searchThreads,
   switchAccount,
 } from './api/codexGateway'
@@ -1231,13 +1109,45 @@ import type { GitCommitFileChange, GitCommitOption, LocalDirectoryEntry, Telegra
 import { getFreeModeStatus, setFreeMode, setFreeModeCustomKey, setCustomProvider } from './api/codexGateway'
 import { getPathLeafName, getPathParent, isProjectlessChatPath, normalizePathForUi } from './pathUtils.js'
 import { copyTextToClipboard } from './utils/clipboard'
+import { getLatestCompletedReply } from './api/threadCommands'
+import type { AppCommandName, AppCommandRequest } from './components/content/composerCommands'
 
+const ThreadCommandDialog = defineAsyncComponent(() => import('./components/content/ThreadCommandDialog.vue'))
 const ThreadConversation = defineAsyncComponent(() => import('./components/content/ThreadConversation.vue'))
 const ThreadTerminalPanel = defineAsyncComponent(() => import('./components/content/ThreadTerminalPanel.vue'))
 const ReviewPane = defineAsyncComponent(() => import('./components/content/ReviewPane.vue'))
 const DirectoryHub = defineAsyncComponent(() => import('./components/content/DirectoryHub.vue'))
+const ApiProxyPanel = defineAsyncComponent(() => import('./components/api-proxy/ApiProxyPanel.vue'))
 const AutomationsPanel = defineAsyncComponent(() => import('./components/content/AutomationsPanel.vue'))
 const { t, uiLanguage, uiLanguageOptions, setUiLanguage } = useUiLanguage()
+const displayTimeZoneError = ref('')
+const isSavingDisplayTimeZone = ref(false)
+const displayTimeZoneOptions = computed(() => [
+  { value: 'system', label: `${t('Follow system')} · ${browserTimeZone()}` },
+  ...availableDisplayTimeZones().map(zone => ({ value: zone, label: zone })),
+])
+let unsubscribeDisplayTimeZone: (() => void) | null = null
+let accountOverviewPollTimer: ReturnType<typeof setInterval> | null = null
+async function onDisplayTimeZoneChange(value: string): Promise<void> {
+  if (isSavingDisplayTimeZone.value || value === displayTimeZonePreference.value) return
+  isSavingDisplayTimeZone.value = true
+  displayTimeZoneError.value = ''
+  try {
+    const currentResponse = await fetch('/codex-api/api-proxy/activation')
+    const current = await currentResponse.json()
+    if (!currentResponse.ok) throw new Error(current.error?.message || '读取激活计划失败')
+    const response = await fetch('/codex-api/api-proxy/activation', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...current.data.settings, timezone: value === 'system' ? browserTimeZone() : value }),
+    })
+    if (!response.ok) throw new Error('同步激活计划时区失败，请重试。')
+    setDisplayTimeZone(value)
+  } catch (cause) {
+    displayTimeZoneError.value = cause instanceof Error ? cause.message : '显示时区保存失败。'
+  } finally {
+    isSavingDisplayTimeZone.value = false
+  }
+}
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const ACCOUNTS_SECTION_COLLAPSED_STORAGE_KEY = 'codex-web-local.accounts-section-collapsed.v1'
@@ -1247,7 +1157,6 @@ const worktreeName = import.meta.env.VITE_WORKTREE_NAME ?? 'unknown'
 const appVersion = import.meta.env.VITE_APP_VERSION ?? 'unknown'
 const SETTINGS_HELP = {
   sendWithEnter: t('When enabled, press Enter to send. When disabled, use Command+Enter to send.'),
-  inProgressSendMode: t('If a turn is still running, choose whether a new prompt should steer the current turn or be queued.'),
   appearance: t('Switch between system theme, light mode, and dark mode.'),
   chatWidth: t('Choose how wide the conversation column and composer can grow on desktop screens.'),
   dictationClickToToggle: t('Use click-to-start and click-to-stop dictation instead of hold-to-talk.'),
@@ -1407,6 +1316,7 @@ const WHISPER_LANGUAGES: Record<string, string> = {
 }
 
 const {
+  webPreferenceState, webPreferenceError, webDefaultChoice, configureWebDefaults, webDefaultsProvider, initializeWebConversation,
   projectGroups,
   projectDisplayNameById,
   selectedThread,
@@ -1414,10 +1324,12 @@ const {
   selectedThreadTerminalOpen,
   selectedThreadServerRequests,
   selectedLiveOverlay,
-  codexQuota,
   selectedThreadId,
   availableCollaborationModes,
   availableModelIds,
+  availableModels,
+  modelCatalogError,
+  reportedModel,
   selectedCollaborationMode,
   selectedModelId,
   selectedReasoningEffort,
@@ -1427,6 +1339,7 @@ const {
   accountRateLimitSnapshots,
   messages,
   hasMoreOlderMessages,
+  threadSearchVersion,
   isLoadingThreads,
   isThreadListFullyLoaded,
   isLoadingMessages,
@@ -1439,6 +1352,7 @@ const {
   refreshAll,
   refreshSkills,
   selectThread,
+  markThreadAsRead,
   ensureThreadMessagesLoaded,
   loadOlderMessages,
   setThreadTerminalOpen,
@@ -1451,7 +1365,12 @@ const {
   sendMessageToNewThread,
   interruptSelectedThreadTurn,
   selectedThreadQueuedMessages,
+  selectedThreadQueueError,
   removeQueuedMessage,
+  beginQueuedMessageEdit,
+  updateQueuedMessage,
+  changeQueuedMessage,
+  refreshQueueState,
   reorderQueuedMessage,
   steerQueuedMessage,
   setSelectedCollaborationMode,
@@ -1461,6 +1380,8 @@ const {
   setSelectedReasoningEffort,
   updateSelectedSpeedMode,
   respondToPendingServerRequest,
+  answerAsyncQuestions,
+  selectedAuthRecovery,
   renameProject,
   removeProject,
   reorderProject,
@@ -1516,7 +1437,38 @@ const isThreadTerminalAvailable = ref(true)
 const terminalProjectQuickCommands = ref<ThreadTerminalQuickCommand[]>([])
 const terminalStoredQuickCommands = ref<TerminalHeaderQuickCommand[]>(loadTerminalStoredQuickCommands())
 const terminalHeaderDropdownValue = ref('')
-const editingQueuedMessageState = ref<{ threadId: string; queueIndex: number } | null>(null)
+type QueueDraftEdit = { threadId: string; messageId: string; revision: number; editToken: string; draftKey: string }
+const queueDraftEditKey = 'codexapp.queue-draft-edits.v2'
+const queueDraftEdits = ref<Record<string, QueueDraftEdit>>(loadQueueDraftEdits())
+const editingQueuedMessageState = computed(() => queueDraftEdits.value[selectedThreadId.value] ?? null)
+const replaceQueueDraftId = ref('')
+const queueDraftError = ref('')
+
+function loadQueueDraftEdits(): Record<string, QueueDraftEdit> {
+  try {
+    const rows = JSON.parse(window.sessionStorage.getItem(queueDraftEditKey) || '{}')
+    if (!rows || typeof rows !== 'object' || Array.isArray(rows)) return {}
+    const restored: Record<string, QueueDraftEdit> = {}
+    for (const [id, value] of Object.entries(rows)) {
+      const row = value as QueueDraftEdit
+      if (row?.threadId === id && row.messageId && row.editToken && row.draftKey && Number.isInteger(row.revision)) restored[id] = row
+    }
+    return restored
+  } catch { return {} }
+}
+
+function saveQueueDraftEdit(threadId: string, edit: QueueDraftEdit | null): void {
+  const next = { ...queueDraftEdits.value }
+  if (edit) next[threadId] = edit
+  else delete next[threadId]
+  window.sessionStorage.setItem(queueDraftEditKey, JSON.stringify(next))
+  queueDraftEdits.value = next
+}
+
+watch(selectedThreadId, () => {
+  queueDraftError.value = ''
+  replaceQueueDraftId.value = ''
+})
 const isRouteSyncInProgress = ref(false)
 const directoryTryInFlightKey = ref('')
 let hasPendingRouteSync = false
@@ -1546,15 +1498,48 @@ const worktreeInitStatus = ref<{ phase: 'idle' | 'running' | 'error'; title: str
   title: '',
   message: '',
 })
-const isSidebarCollapsed = ref(loadSidebarCollapsed())
+let desktopSidebarCollapsed = loadSidebarCollapsed()
+const isSidebarCollapsed = ref(isMobile.value || desktopSidebarCollapsed)
 const sidebarSearchQuery = ref('')
+const sidebarSearchMode = ref<'title' | 'body'>('title')
+const serverSearchGroups = ref<UiProjectGroup[] | null>(null)
+const threadSearchState = ref<'loading' | 'ready' | 'error'>('ready')
+const sidebarThreadGroups = computed(() => {
+  if (!sidebarSearchQuery.value.trim() || !serverSearchGroups.value) return projectGroups.value
+  // Keep the complete loaded set so search filtering cannot prune unrelated pinned threads.
+  const matches = new Map(serverSearchGroups.value.flatMap(group => group.threads.map(thread => [thread.id, thread] as const)))
+  const groups = projectGroups.value.map(group => ({
+    ...group,
+    threads: group.threads.map(thread => {
+      const match = matches.get(thread.id)
+      matches.delete(thread.id)
+      return match ? { ...thread, title: match.title } : thread
+    }),
+  }))
+  for (const group of serverSearchGroups.value) {
+    const missing = group.threads.filter(thread => matches.has(thread.id))
+    if (!missing.length) continue
+    const existing = groups.find(row => row.projectName === group.projectName)
+    if (existing) existing.threads.push(...missing)
+    else groups.push({ ...group, threads: missing })
+  }
+  return groups
+})
+
+function setSidebarSearchMode(value: string): void {
+  if (value === 'title' || value === 'body') sidebarSearchMode.value = value
+}
 const isSidebarSearchVisible = ref(false)
 const sidebarScrollableRef = ref<HTMLElement | null>(null)
 const sidebarSearchInputRef = ref<HTMLInputElement | null>(null)
 const settingsAreaRef = ref<HTMLElement | null>(null)
-const settingsPanelRef = ref<HTMLElement | null>(null)
 const settingsButtonRef = ref<HTMLElement | null>(null)
 const serverMatchedThreadIds = ref<string[] | null>(null)
+const threadSearchStatus = ref('')
+const threadSearchScope = ref('')
+const threadHistoryActionError = ref('')
+watch(() => selectedThreadId.value, () => { threadHistoryActionError.value = '' })
+let threadSearchController: AbortController | null = null
 let threadSearchTimer: ReturnType<typeof setTimeout> | null = null
 let terminalKeyboardFocusFallbackTimer: ReturnType<typeof setTimeout> | null = null
 let sidebarScrollTop = 0
@@ -1567,6 +1552,22 @@ let threadWorktreeSummaryRequestId = 0
 const defaultNewProjectName = ref('New Project (1)')
 const homeDirectory = ref('')
 const isSettingsOpen = ref(false)
+const runtimeCapabilities = ref<{ cliVersion: string; schemaHash: string; experimental: boolean; methods: string[]; appVersion: string; generatedAt: string; features?: { historyPaging: boolean } } | null>(null)
+const runtimeCapabilitiesError = ref('')
+const runtimeCapabilitiesLoading = ref(false)
+async function loadRuntimeCapabilities(): Promise<void> {
+  if (runtimeCapabilitiesLoading.value) return
+  runtimeCapabilitiesLoading.value = true
+  runtimeCapabilitiesError.value = ''
+  try {
+    const response = await fetch('/codex-api/meta/capabilities')
+    if (!response.ok) throw new Error('能力检测暂时不可用')
+    runtimeCapabilities.value = (await response.json()).data
+  } catch (error) {
+    runtimeCapabilitiesError.value = error instanceof Error ? error.message : '能力检测失败'
+  } finally { runtimeCapabilitiesLoading.value = false }
+}
+watch(isSettingsOpen, open => { if (open && !runtimeCapabilities.value) void loadRuntimeCapabilities() })
 const isAccountsSectionCollapsed = ref(loadAccountsSectionCollapsed())
 const isReviewPaneOpen = ref(false)
 const reviewInitialFilePath = ref('')
@@ -1595,20 +1596,33 @@ function toThreadBranchCommitsKey(branch: string, includeResetHistory: boolean):
 
 const createFolderInputRef = ref<HTMLInputElement | null>(null)
 const accounts = ref<UiAccountEntry[]>([])
+const activeAccount = computed(() => accounts.value.find(account => account.isActive))
+const directoryAccountRevision = ref(0)
+let hasAccountSnapshot = false
+watch(accounts, (next, previous) => {
+  if (!hasAccountSnapshot) {
+    hasAccountSnapshot = true
+    return
+  }
+  const nextId = next.find(account => account.isActive)?.storageId || ''
+  const previousId = previous.find(account => account.isActive)?.storageId || ''
+  if (nextId !== previousId) directoryAccountRevision.value += 1
+})
 const isRefreshingAccounts = ref(false)
 const isSwitchingAccounts = ref(false)
-const isStartingCodexLogin = ref(false)
-const isCompletingCodexLogin = ref(false)
+const isStartingCodexLogin = computed(() => isCodexLoginModalOpen.value)
 const isCodexLoginModalOpen = ref(false)
-const codexLoginUrl = ref('')
-const codexLoginCallbackUrl = ref('')
-const codexLoginCallbackInputRef = ref<HTMLInputElement | null>(null)
+const loginIntent = ref<'add' | 'reauth'>('add')
+const loginTargetStorageId = ref('')
+const refreshingAccountId = ref('')
 const removingAccountId = ref('')
 const confirmingRemoveAccountId = ref('')
 const hoveredAccountId = ref('')
 const accountActionError = ref('')
+const accountActionNotice = useTransientNotice()
+watch(isSettingsOpen, open => { if (!open) accountActionNotice.value = '' })
+watch(() => route.fullPath, () => { accountActionNotice.value = '' })
 const SEND_WITH_ENTER_KEY = 'codex-web-local.send-with-enter.v1'
-const IN_PROGRESS_SEND_MODE_KEY = 'codex-web-local.in-progress-send-mode.v1'
 const DARK_MODE_KEY = 'codex-web-local.dark-mode.v1'
 const DICTATION_CLICK_TO_TOGGLE_KEY = 'codex-web-local.dictation-click-to-toggle.v1'
 const DICTATION_AUTO_SEND_KEY = 'codex-web-local.dictation-auto-send.v1'
@@ -1617,7 +1631,6 @@ const DICTATION_LANGUAGE_KEY = 'codex-web-local.dictation-language.v1'
 const CHAT_WIDTH_KEY = 'codex-web-local.chat-width.v1'
 const MOBILE_RESUME_RELOAD_MIN_HIDDEN_MS = 400
 const sendWithEnter = ref(loadBoolPref(SEND_WITH_ENTER_KEY, true))
-const inProgressSendMode = ref<'steer' | 'queue'>(loadInProgressSendModePref())
 const darkMode = ref<'system' | 'light' | 'dark'>(loadDarkModePref())
 const chatWidth = ref<ChatWidthMode>(loadChatWidthPref())
 const dictationClickToToggle = ref(loadBoolPref(DICTATION_CLICK_TO_TOGGLE_KEY, false))
@@ -1638,7 +1651,6 @@ const projectZipProgressWidth = computed(() => {
   if (!total || total <= 0) return loaded > 0 ? '55%' : '20%'
   return `${Math.min(100, Math.max(5, Math.round((loaded / total) * 100)))}%`
 })
-const showFirstLaunchPluginsCard = ref(false)
 const freeModeEnabled = ref(false)
 const freeModeLoading = ref(false)
 const freeModeCustomKey = ref('')
@@ -1669,13 +1681,47 @@ const createFolderError = ref('')
 const isCreatingFolder = ref(false)
 const isProjectSetupModalOpen = ref(false)
 const projectSetupMode = ref<'create' | 'clone'>('create')
+const projectEditingId = ref('')
+const projectDirectoryDraft = ref('')
+const projectDirectoriesLoaded = ref(true)
 const projectSetupBaseDir = ref('')
+const projectCloneBaseDir = ref('')
+const projectNameEdited = ref(false)
+const projectSetupDestination = computed({
+  get: () => projectSetupMode.value === 'create' ? projectSetupBaseDir.value : projectCloneBaseDir.value,
+  set: (value: string) => { if (projectSetupMode.value === 'create') projectSetupBaseDir.value = value; else projectCloneBaseDir.value = value },
+})
+watch(projectSetupBaseDir, (path) => {
+  if (!projectNameEdited.value) projectNameDraft.value = projectDisplayName(normalizeAbsolutePath(path), workspaceRootOptionsState.value.labels)
+})
 const projectNameDraft = ref('')
 const githubCloneUrlDraft = ref('')
 const isProjectImporting = ref(false)
 const projectSetupError = ref('')
 const isProjectSetupSubmitting = ref(false)
 const projectSetupPrimaryInputRef = ref<HTMLInputElement | null>(null)
+watch(() => projectSetupBaseDir.value, (path, _previous, onCleanup) => {
+  if (projectEditingId.value) return
+  projectDirectoryDraft.value = ''
+  projectDirectoriesLoaded.value = false
+  let cancelled = false
+  const timer = setTimeout(async () => {
+    try {
+      const directories = path.trim() ? await getProjectDirectories(path.trim()) : []
+      if (cancelled) return
+      projectDirectoryDraft.value = directories.join('\n')
+      projectDirectoriesLoaded.value = true
+      projectSetupError.value = ''
+    } catch (error) {
+      if (!cancelled) projectSetupError.value = error instanceof Error ? error.message : '读取项目工作目录失败'
+    }
+  }, 300)
+  onCleanup(() => {
+    cancelled = true
+    clearTimeout(timer)
+  })
+})
+
 const projectImportInputRef = ref<HTMLInputElement | null>(null)
 const isExistingFolderPickerOpen = ref(false)
 const existingFolderPathInputRef = ref<HTMLInputElement | null>(null)
@@ -1729,15 +1775,25 @@ const routeThreadId = computed(() => {
 })
 
 const isHomeRoute = computed(() => route.name === 'home')
+const isSettingsRoute = computed(() => route.name === 'settings')
+function openSettings(): void {
+  isSettingsOpen.value = false
+  if (!isSettingsRoute.value) void router.push({ name: 'settings' })
+  if (isMobile.value) setSidebarCollapsed(true)
+}
+watch(isSettingsRoute, open => { if (open && !runtimeCapabilities.value) void loadRuntimeCapabilities() })
 const isSkillsRoute = computed(() => route.name === 'skills')
+const isApiProxyRoute = computed(() => route.name === 'api-proxy')
 const isAutomationsRoute = computed(() => route.name === 'automations')
 const routeAutomationId = computed(() => {
   const raw = route.query.automationId
   return typeof raw === 'string' ? raw : ''
 })
 const contentTitle = computed(() => {
+  if (isSettingsRoute.value) return t('Settings')
+  if (isApiProxyRoute.value) return t('API Proxy')
   if (isAutomationsRoute.value) return t('Automations')
-  if (isSkillsRoute.value) return t('Skills')
+  if (isSkillsRoute.value) return '插件 / 技能 / MCP'
   if (isHomeRoute.value) return t('Start new thread')
   return selectedThread.value?.title ?? t('Choose a thread')
 })
@@ -1770,9 +1826,14 @@ const liveOverlay = computed(() => selectedLiveOverlay.value)
 const composerThreadContextId = computed(() => (isHomeRoute.value ? '__new-thread__' : selectedThreadId.value))
 const composerSelectedModelId = computed(() => readModelIdForThread(composerThreadContextId.value))
 const selectedThreadPendingRequest = computed<UiServerRequest | null>(() => {
-  const rows = selectedThreadServerRequests.value
-  return rows.length > 0 ? rows[rows.length - 1] : null
+  return [...selectedThreadServerRequests.value].sort((a, b) => pendingRequestPriority(a) - pendingRequestPriority(b))[0] ?? null
 })
+const visiblePendingRequests = computed(() => {
+  const first = selectedThreadPendingRequest.value
+  if (!first) return []
+  return isAsyncUserInputRequest(first) ? selectedThreadServerRequests.value : [first]
+})
+const pendingReplyIds = ref(new Set<number>())
 const composerCwd = computed(() => {
   if (isHomeRoute.value) return newThreadCwd.value.trim()
   return selectedThread.value?.cwd?.trim() ?? ''
@@ -1799,15 +1860,30 @@ const isTerminalKeyboardLayoutActive = computed(() => (
   isVirtualKeyboardOpen.value ||
   (isComposerTerminalOpen.value && isTerminalKeyboardFocusFallbackActive.value)
 ))
-const directoryCwd = computed(() => selectedThread.value?.cwd?.trim() ?? newThreadCwd.value.trim())
+const directoryCwd = computed(() => isSkillsRoute.value
+  ? (typeof route.query.cwd === 'string' ? route.query.cwd.trim() : '')
+  : selectedThread.value?.cwd?.trim() ?? newThreadCwd.value.trim())
+const directoryThreadId = computed(() => isSkillsRoute.value && typeof route.query.fromThread === 'string' ? route.query.fromThread : '')
+const directoryProjects = computed(() => [...new Set([
+  ...workspaceRootOptionsState.value.order,
+  ...projectGroups.value.flatMap(group => group.threads.map(thread => thread.cwd.trim())),
+  directoryCwd.value,
+].filter(Boolean))].map(cwd => ({ value: cwd, label: getFolderOptionLabel(cwd) || cwd })))
+
+async function openDirectory(tab = 'plugins'): Promise<void> {
+  const cwd = directoryCwd.value
+  const fromThread = isSkillsRoute.value ? directoryThreadId.value : routeThreadId.value
+  await router.push({ name: 'skills', query: { tab, ...(cwd ? { cwd } : {}), ...(fromThread ? { fromThread } : {}) } })
+  if (isMobile.value) setSidebarCollapsed(true)
+}
+
+function onDirectoryScopeChange(cwd: string): void {
+  void router.replace({ name: 'skills', query: { tab: route.query.tab || 'plugins', ...(cwd ? { cwd } : {}) } })
+}
 const isSelectedThreadInProgress = computed(() => !isHomeRoute.value && selectedThread.value?.inProgress === true)
-const showThreadContextBadge = computed(() => !isHomeRoute.value && !isSkillsRoute.value && !isAutomationsRoute.value && selectedThreadId.value.trim().length > 0)
-const isAccountSwitchBlocked = computed(() =>
-  isSendingMessage.value ||
-  isInterruptingTurn.value ||
-  isSelectedThreadInProgress.value ||
-  selectedThreadServerRequests.value.length > 0,
-)
+const showThreadContextBadge = computed(() => !isHomeRoute.value && !isSkillsRoute.value && !isAutomationsRoute.value && !isApiProxyRoute.value && selectedThreadId.value.trim().length > 0)
+const activeAccountStorageId = computed(() => accounts.value.find((account) => account.isActive)?.storageId ?? null)
+const loginTargetAccount = computed(() => accounts.value.find((account) => account.storageId === loginTargetStorageId.value) ?? null)
 
 function formatCompactTokenCount(value: number): string {
   if (!Number.isFinite(value)) return '0'
@@ -1835,17 +1911,6 @@ function buildThreadContextTooltip(usage: UiThreadTokenUsage | null): string {
   }
 
   return lines.join('\n')
-}
-
-function dismissFirstLaunchPluginsCard(): void {
-  if (!showFirstLaunchPluginsCard.value) return
-  showFirstLaunchPluginsCard.value = false
-  void persistFirstLaunchPluginsCardPreference(true)
-}
-
-function onOpenPluginsHomeCard(): void {
-  dismissFirstLaunchPluginsCard()
-  void router.push({ name: 'skills', query: { tab: 'plugins' } })
 }
 
 const threadContextBadgeState = computed(() => {
@@ -2005,14 +2070,10 @@ const isCreateFolderNameValid = computed(() => {
 const canCreateFolder = computed(() => {
   return isCreateFolderNameValid.value && createFolderParentPath.value.trim().length > 0 && !existingFolderError.value
 })
-const isProjectNameDraftValid = computed(() => {
-  const draft = projectNameDraft.value.trim()
-  if (!draft) return false
-  if (draft === '.' || draft === '..') return false
-  return !/[\\/]/u.test(draft)
-})
+const isProjectNameDraftValid = computed(() => Boolean(projectNameDraft.value.trim()))
 const canSubmitProjectSetup = computed(() => {
-  const baseDir = projectSetupBaseDir.value.trim()
+  if (projectSetupMode.value === 'create' && !projectDirectoriesLoaded.value) return false
+  const baseDir = projectSetupDestination.value.trim()
   if (!baseDir) return false
   if (projectSetupMode.value === 'create') return isProjectNameDraftValid.value
   return githubCloneUrlDraft.value.trim().length > 0
@@ -2027,6 +2088,7 @@ const createFolderSubmitLabel = computed(() => {
   return 'Create'
 })
 const projectSetupSubmitLabel = computed(() => {
+  if (projectEditingId.value) return isProjectSetupSubmitting.value ? t('Saving…') : t('Save')
   if (isProjectSetupSubmitting.value) {
     if (projectSetupMode.value === 'clone') return t('Cloning…')
     return t('Creating…')
@@ -2123,6 +2185,12 @@ const telegramStatusText = computed(() => {
 })
 
 onMounted(() => {
+  unsubscribeDisplayTimeZone = subscribeDisplayTimeZoneStorage()
+  accountOverviewPollTimer = setInterval(() => {
+    if (document.hidden || isAccountStatePollInFlight || isRefreshingAccounts.value) return
+    isAccountStatePollInFlight = true
+    void loadAccountsState({ silent: true }).finally(() => { isAccountStatePollInFlight = false })
+  }, 60_000)
   document.addEventListener('pointerdown', onDocumentPointerDown)
   window.addEventListener('keydown', onWindowKeyDown)
   document.addEventListener('visibilitychange', onDocumentVisibilityChange)
@@ -2136,12 +2204,11 @@ onMounted(() => {
   darkModeMediaQuery?.addEventListener('change', applyDarkMode)
   void initialize()
   void loadHomeDirectory()
-  void loadFirstLaunchPluginsCardPreference()
   void loadWorkspaceRootOptionsState()
   void refreshDefaultProjectName()
   void refreshTelegramConfig()
   void refreshTelegramStatus()
-  void loadFreeModeStatus()
+  void loadFreeModeStatus({ refreshModels: false })
   void refreshThreadTerminalStatus()
   void refreshTerminalQuickCommands()
 })
@@ -2157,6 +2224,8 @@ watch(visibleFeedbackErrors, (values, oldValues) => {
 })
 
 onUnmounted(() => {
+  unsubscribeDisplayTimeZone?.()
+  if (accountOverviewPollTimer !== null) clearInterval(accountOverviewPollTimer)
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   window.removeEventListener('keydown', onWindowKeyDown)
   document.removeEventListener('visibilitychange', onDocumentVisibilityChange)
@@ -2174,6 +2243,7 @@ onUnmounted(() => {
     clearTimeout(threadSearchTimer)
     threadSearchTimer = null
   }
+  threadSearchController?.abort()
   clearTerminalKeyboardFocusFallbackTimer()
   stopPolling()
 })
@@ -2185,26 +2255,46 @@ function updateVisualViewportState(): void {
   visualViewportOffsetTop.value = window.visualViewport?.offsetTop ?? 0
 }
 
-watch(sidebarSearchQuery, (value) => {
+watch([sidebarSearchQuery, sidebarSearchMode, threadSearchVersion], ([value, mode]) => {
   const query = value.trim()
+  threadSearchController?.abort()
+  threadSearchController = null
   if (threadSearchTimer) {
     clearTimeout(threadSearchTimer)
     threadSearchTimer = null
   }
-  if (!query) {
-    serverMatchedThreadIds.value = null
-    return
-  }
+  serverMatchedThreadIds.value = query ? [] : null
+  serverSearchGroups.value = null
+  threadSearchState.value = query ? 'loading' : 'ready'
+  threadSearchStatus.value = query ? '搜索中…' : ''
+  threadSearchScope.value = ''
+  if (!query) return
 
+  const controller = new AbortController()
+  threadSearchController = controller
   threadSearchTimer = setTimeout(() => {
-    void searchThreads(query, 1000)
+    threadSearchTimer = null
+    void searchThreads(query, 1000, controller.signal, mode)
       .then((result) => {
-        if (sidebarSearchQuery.value.trim() !== query) return
+        if (controller.signal.aborted || threadSearchController !== controller) return
         serverMatchedThreadIds.value = result.threadIds
+        serverSearchGroups.value = result.groups ?? null
+        threadSearchState.value = 'ready'
+        const partial = result.titleScopeComplete === false || (mode === 'body' && (
+          (result.bodyThreadCount ?? 0) < result.indexedThreadCount || Boolean(result.partialBodyCount) || Boolean(result.failedBodyCount)
+        ))
+        threadSearchStatus.value = `${result.threadIds.length} 个结果${partial ? ' · 部分范围' : ''}`
+        const titleScope = result.titleScopeComplete === false ? `最近 ${result.indexedThreadCount} 个会话的标题` : '非归档会话的标题'
+        threadSearchScope.value = mode === 'body'
+          ? `${titleScope}；正文搜索最近 ${result.bodyThreadLimit ?? 100} 个会话的用户消息和最终回复（每个最近 ${result.bodyTurnLimit ?? 50} 回合）。${result.failedBodyCount ? ` ${result.failedBodyCount} 个会话读取失败。` : ''}`
+          : titleScope
       })
-      .catch(() => {
-        if (sidebarSearchQuery.value.trim() !== query) return
-        serverMatchedThreadIds.value = null
+      .catch((cause) => {
+        if (controller.signal.aborted || threadSearchController !== controller) return
+        serverMatchedThreadIds.value = []
+        threadSearchState.value = 'error'
+        threadSearchStatus.value = '搜索失败，请重试。'
+        threadSearchScope.value = cause instanceof Error ? cause.message : ''
       })
   }, 220)
 })
@@ -2255,7 +2345,7 @@ async function maybeImportExternalCodexAuthAccount(): Promise<boolean> {
   const previousAccountsJson = JSON.stringify(accounts.value.map((account) => account.accountId).sort())
   try {
     const result = await refreshAccountsFromAuth()
-    accounts.value = result.accounts
+    applyAccountsSnapshot(result.accounts)
   } catch {
     await loadAccountsState({ silent: true })
   }
@@ -2293,11 +2383,6 @@ async function refreshTelegramConfig(): Promise<void> {
   } catch (error) {
     telegramConfigError.value = error instanceof Error ? error.message : 'Failed to load Telegram configuration'
   }
-}
-
-async function loadFirstLaunchPluginsCardPreference(): Promise<void> {
-  const preference = await getFirstLaunchPluginsCardPreference()
-  showFirstLaunchPluginsCard.value = preference.dismissed !== true
 }
 
 function parseTelegramAllowedUserIdsInput(value: string): Array<number | '*'> {
@@ -2416,6 +2501,7 @@ function onSidebarSearchKeydown(event: KeyboardEvent): void {
 
 function onSelectThread(threadId: string): void {
   if (!threadId) return
+  markThreadAsRead(threadId)
   if (route.name === 'thread' && routeThreadId.value === threadId) return
   void router.push({ name: 'thread', params: { threadId } })
   if (isMobile.value) setSidebarCollapsed(true)
@@ -2448,11 +2534,6 @@ function onAutomationsChanged(): void {
   void automationsPanelRef.value?.loadAutomations()
 }
 
-async function onCopyThreadChat(threadId: string): Promise<void> {
-  if (!threadId) return
-  if (selectedThreadId.value !== threadId) return
-  await copySelectedThreadChat()
-}
 
 function shortAccountId(accountId: string): string {
   return accountId.length > 8 ? accountId.slice(-8) : accountId
@@ -2473,12 +2554,26 @@ function isPaymentRequiredErrorMessage(value: string | null): boolean {
 }
 
 function isAccountUnavailable(account: UiAccountEntry): boolean {
-  return account.unavailableReason === 'payment_required' || isPaymentRequiredErrorMessage(account.quotaError)
+  return account.authStatus === 'reauth_required'
+    || account.authStatus === 'payment_required'
+    || account.authStatus === 'materialization_dirty'
+    || account.unavailableReason !== null
+    || isPaymentRequiredErrorMessage(account.quotaError)
 }
 
-function isAccountActionDisabled(account: UiAccountEntry): boolean {
-  return isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value || removingAccountId.value.length > 0
-    || (account.isActive && removingAccountId.value !== account.storageId && isAccountSwitchBlocked.value)
+function isAccountActionDisabled(_account: UiAccountEntry): boolean {
+  return isSwitchingAccounts.value || isStartingCodexLogin.value
+}
+
+function formatAccountStatus(account: UiAccountEntry): string {
+  if (account.authStatus === 'reauth_required') return t('Sign-in required')
+  if (account.authStatus === 'payment_required') return t('Payment required')
+  if (account.authStatus === 'refreshing') return t('Refreshing…')
+  if (account.authStatus === 'switching') return t('Switching…')
+  if (account.authStatus === 'stale') return t('Verification stale')
+  if (account.authStatus === 'transient_error') return t('Temporary error')
+  if (account.authStatus === 'materialization_dirty') return t('Recovery required')
+  return t('Ready')
 }
 
 function isRemoveConfirmationActive(account: UiAccountEntry): boolean {
@@ -2535,13 +2630,19 @@ function pickWeeklyQuotaWindow(account: UiAccountEntry) {
 
 function formatResetDateCompact(resetsAt: number | null): string {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return ''
-  const date = new Date(resetsAt * 1000)
-  return `${date.getMonth() + 1}月${date.getDate()}日`
+  return formatLocalDateTime(resetsAt * 1000, { year: undefined, month: 'numeric', day: 'numeric', hour: undefined, minute: undefined }, 'zh-CN')
 }
 
 function formatAccountQuota(account: UiAccountEntry): string {
   if (isAccountUnavailable(account)) {
-    return account.quotaError || t('402 Payment Required')
+    if (account.quotaError) return account.quotaError
+    if (account.authStatus === 'payment_required' || account.unavailableReason === 'payment_required') {
+      return t('402 Payment Required')
+    }
+    if (account.authStatus === 'reauth_required' || account.unavailableReason === 'reauth_required') {
+      return t('Sign-in required')
+    }
+    return t('Recovery required')
   }
   const quota = account.quotaSnapshot
   const window = pickWeeklyQuotaWindow(account)
@@ -2551,8 +2652,8 @@ function formatAccountQuota(account: UiAccountEntry): string {
     const remainingPercent = Math.max(0, Math.min(100, 100 - Math.round(displayWindow.usedPercent)))
     const refreshDate = formatResetDateCompact(displayWindow.resetsAt)
     return refreshDate
-      ? `${remainingPercent}% ${t('weekly remaining')} · ${refreshDate}`
-      : `${remainingPercent}% ${t('weekly remaining')}`
+      ? `${remainingPercent}% ${t('primary remaining')} · ${refreshDate}`
+      : `${remainingPercent}% ${t('primary remaining')}`
   }
   if (quota?.credits?.unlimited) {
     return t('Unlimited credits')
@@ -2574,7 +2675,7 @@ function formatAccountQuota(account: UiAccountEntry): string {
 
 function buildAccountTitle(account: UiAccountEntry): string {
   return [
-    account.email || t('Account'),
+    accountDisplayName(account),
     formatAccountMeta(account),
     isAccountUnavailable(account) ? t('Unavailable account') : null,
     formatAccountQuota(account),
@@ -2582,10 +2683,20 @@ function buildAccountTitle(account: UiAccountEntry): string {
   ].filter(Boolean).join('\n')
 }
 
+const removedAccountIds = new Set<string>()
+function applyAccountsSnapshot(next: UiAccountEntry[]): void {
+  const current = new Map(accounts.value.map(account => [account.storageId, account]))
+  accounts.value = next.filter(account => !removedAccountIds.has(account.storageId)).map(account => {
+    const previous = current.get(account.storageId)
+    if (!previous || !Number.isFinite(Date.parse(previous.quotaUpdatedAtIso || '')) || Date.parse(previous.quotaUpdatedAtIso || '') <= Date.parse(account.quotaUpdatedAtIso || '')) return account
+    return { ...account, quotaSnapshot: previous.quotaSnapshot, quotaUpdatedAtIso: previous.quotaUpdatedAtIso, quotaStatus: previous.quotaStatus, quotaError: previous.quotaError, resetCredits: previous.resetCredits, planType: previous.planType }
+  })
+}
+
 async function loadAccountsState(options: { silent?: boolean } = {}): Promise<void> {
   try {
     const result = await getAccounts()
-    accounts.value = result.accounts
+    applyAccountsSnapshot(result.accounts)
     if (!result.accounts.some((account) => account.storageId === hoveredAccountId.value)) {
       hoveredAccountId.value = ''
     }
@@ -2599,19 +2710,20 @@ async function loadAccountsState(options: { silent?: boolean } = {}): Promise<vo
 }
 
 async function onRefreshAccounts(): Promise<void> {
-  if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value) return
+  if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value) return
   accountActionError.value = ''
+  accountActionNotice.value = ''
   hoveredAccountId.value = ''
   confirmingRemoveAccountId.value = ''
   isRefreshingAccounts.value = true
   try {
-    const result = await refreshAccountsFromAuth()
-    accounts.value = result.accounts
-    stopPolling()
-    startPolling()
-    void refreshAll({
-      includeSelectedThreadMessages: true,
-    })
+    const result = await getAccounts()
+    applyAccountsSnapshot(result.accounts)
+    for (const account of result.accounts) {
+      const refreshed = await refreshAccountQuota(account.storageId)
+      applyAccountsSnapshot(refreshed.accounts)
+    }
+
   } catch (error) {
     accountActionError.value = error instanceof Error ? error.message : t('Failed to refresh accounts')
   } finally {
@@ -2619,18 +2731,31 @@ async function onRefreshAccounts(): Promise<void> {
   }
 }
 
-async function onSwitchAccount(storageId: string): Promise<void> {
-  if (isSwitchingAccounts.value || isRefreshingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value) return
-  if (isAccountSwitchBlocked.value) {
-    accountActionError.value = t('Finish the current turn and pending requests before switching accounts.')
-    return
-  }
+async function onRefreshAccountQuota(storageId: string): Promise<void> {
+  if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || refreshingAccountId.value) return
   accountActionError.value = ''
+  accountActionNotice.value = ''
+  refreshingAccountId.value = storageId
+  try {
+    const result = await refreshAccountQuota(storageId)
+    applyAccountsSnapshot(result.accounts)
+  } catch (error) {
+    accountActionError.value = error instanceof Error ? error.message : t('Failed to refresh account quota')
+  } finally {
+    refreshingAccountId.value = ''
+  }
+}
+
+async function onSwitchAccount(storageId: string): Promise<void> {
+  if (isSwitchingAccounts.value || isStartingCodexLogin.value) return
+  accountActionError.value = ''
+  accountActionNotice.value = ''
   hoveredAccountId.value = ''
   confirmingRemoveAccountId.value = ''
   isSwitchingAccounts.value = true
   try {
-    const nextActiveAccount = await switchAccount(storageId)
+    const switched = await switchAccount(storageId, activeAccountStorageId.value, selectedThreadId.value || undefined)
+    const nextActiveAccount = switched.account
     accounts.value = accounts.value.map((account) => (
       account.storageId === storageId
         ? nextActiveAccount
@@ -2638,10 +2763,11 @@ async function onSwitchAccount(storageId: string): Promise<void> {
     ))
     stopPolling()
     startPolling()
-    void refreshAll({
+    await refreshAll({
       includeSelectedThreadMessages: true,
     })
-    void loadAccountsState({ silent: true })
+    await loadAccountsState({ silent: true })
+    accountActionNotice.value = t('Account switched.')
   } catch (error) {
     accountActionError.value = error instanceof Error ? error.message : t('Failed to switch account')
   } finally {
@@ -2649,79 +2775,50 @@ async function onSwitchAccount(storageId: string): Promise<void> {
   }
 }
 
-async function onStartCodexLogin(): Promise<void> {
-  if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value) return
+function onStartCodexLogin(intent: 'add' | 'reauth', targetStorageId = ''): void {
+  if (isSwitchingAccounts.value) return
   accountActionError.value = ''
-  codexLoginCallbackUrl.value = ''
-  isStartingCodexLogin.value = true
-  try {
-    const loginUrl = await startCodexLogin()
-    codexLoginUrl.value = loginUrl
-    isCodexLoginModalOpen.value = true
-    window.open(loginUrl, '_blank', 'noopener,noreferrer')
-    await nextTick()
-    codexLoginCallbackInputRef.value?.focus()
-  } catch (error) {
-    accountActionError.value = error instanceof Error ? error.message : t('Failed to start Codex login')
-  } finally {
-    isStartingCodexLogin.value = false
-  }
+  accountActionNotice.value = ''
+  loginIntent.value = intent
+  loginTargetStorageId.value = targetStorageId
+  isCodexLoginModalOpen.value = true
 }
 
-function onCancelCodexLoginModal(): void {
-  if (isCompletingCodexLogin.value) return
+function resumeAccountLogin(intent: 'add' | 'reauth', targetStorageId: string): void {
+  loginIntent.value = intent
+  loginTargetStorageId.value = targetStorageId
+  isCodexLoginModalOpen.value = true
+}
+
+function onAccountLoginCompleted(result: AccountLoginCompleteResult): void {
+  removedAccountIds.delete(result.account.storageId)
+  applyAccountsSnapshot(result.accounts)
   isCodexLoginModalOpen.value = false
-  codexLoginCallbackUrl.value = ''
-}
-
-async function onSubmitCodexLoginCallback(): Promise<void> {
-  const callbackUrl = codexLoginCallbackUrl.value.trim()
-  if (!callbackUrl) return
-  await completeCodexLoginFromCallback(callbackUrl)
-}
-
-async function completeCodexLoginFromCallback(callbackUrl: string): Promise<void> {
-  if (isCompletingCodexLogin.value || callbackUrl.length === 0) return
-  accountActionError.value = ''
-  isCompletingCodexLogin.value = true
-  try {
-    const result = await completeCodexLogin(callbackUrl)
-    accounts.value = result.accounts
-    codexLoginUrl.value = ''
-    codexLoginCallbackUrl.value = ''
-    isCodexLoginModalOpen.value = false
-    stopPolling()
-    startPolling()
-    void refreshAll({
-      includeSelectedThreadMessages: true,
-    })
-  } catch (error) {
-    accountActionError.value = error instanceof Error ? error.message : t('Failed to complete Codex login')
-  } finally {
-    isCompletingCodexLogin.value = false
-  }
+  loginTargetStorageId.value = ''
+  stopPolling()
+  startPolling()
+  accountActionNotice.value = result.outcome === 'added'
+    ? t('Account added.')
+    : t('Account sign-in refreshed.')
 }
 
 async function onRemoveAccount(storageId: string): Promise<void> {
-  if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || isCompletingCodexLogin.value || removingAccountId.value.length > 0) return
+  if (removingAccountId.value === storageId) return
   const targetAccount = accounts.value.find((account) => account.storageId === storageId) ?? null
   if (!targetAccount) return
   if (confirmingRemoveAccountId.value !== storageId) {
     confirmingRemoveAccountId.value = storageId
     return
   }
-  if (targetAccount.isActive && isAccountSwitchBlocked.value) {
-    accountActionError.value = t('Finish the current turn and pending requests before removing the active account.')
-    return
-  }
-
   const removedWasActive = targetAccount.isActive
   accountActionError.value = ''
   confirmingRemoveAccountId.value = ''
   removingAccountId.value = storageId
   try {
     const result = await removeAccount(storageId)
-    accounts.value = result.accounts
+    removedAccountIds.add(storageId)
+    accountActionNotice.value = '账号已移除'
+    applyAccountsSnapshot(result.accounts)
     stopPolling()
     startPolling()
     if (removedWasActive) {
@@ -2773,7 +2870,7 @@ function onStartNewThread(projectName: string): void {
     newThreadCwd.value = projectCwd
   }
   if (isMobile.value) setSidebarCollapsed(true)
-  if (isHomeRoute.value) return
+  if (isHomeRoute.value) { initializeWebConversation(''); return }
   void router.push({ name: 'home' })
 }
 
@@ -2975,13 +3072,12 @@ function resolveSelectedThreadProjectCwd(): string {
 }
 
 function onStartNewThreadFromToolbar(): void {
-  const resolvedCwd = resolveSelectedThreadProjectCwd()
-  if (resolvedCwd) {
-    newThreadCwd.value = resolvedCwd
-  }
+  const thread = route.name === 'thread' && !isSettingsOpen.value ? selectedThread.value : null
+  newThreadCwd.value = thread?.cwd && !isProjectlessChatPath(thread.cwd) ? thread.cwd.trim() : ''
+  isSettingsOpen.value = false
   newThreadRuntime.value = 'local'
   if (isMobile.value) setSidebarCollapsed(true)
-  if (isHomeRoute.value) return
+  if (isHomeRoute.value) { initializeWebConversation(''); return }
   void router.push({ name: 'home' })
 }
 
@@ -2989,7 +3085,7 @@ function onStartProjectlessNewChat(): void {
   newThreadCwd.value = ''
   newThreadRuntime.value = 'local'
   if (isMobile.value) setSidebarCollapsed(true)
-  if (isHomeRoute.value) return
+  if (isHomeRoute.value) { initializeWebConversation(''); return }
   void router.push({ name: 'home' })
 }
 
@@ -3025,8 +3121,28 @@ async function loadGitRepoStatus(cwdRaw: string): Promise<void> {
   }
 }
 
-function onRenameProject(payload: { projectName: string; displayName: string }): void {
-  renameProject(payload.projectName, payload.displayName)
+async function onEditProject(projectName: string): Promise<void> {
+  const group = projectGroups.value.find(entry => entry.projectName === projectName)
+  const root = resolvePreferredLocalCwd(projectName, group?.threads[0]?.cwd?.trim() ?? '')
+  if (!root) return
+  projectEditingId.value = projectName
+  projectNameEdited.value = true
+  projectSetupBaseDir.value = root
+  projectNameDraft.value = projectDisplayNameById.value[projectName] || projectDisplayName(root, workspaceRootOptionsState.value.labels)
+  projectSetupMode.value = 'create'
+  projectDirectoryDraft.value = ''
+  projectSetupError.value = ''
+  isProjectSetupModalOpen.value = true
+  isProjectSetupSubmitting.value = true
+  projectDirectoriesLoaded.value = false
+  try {
+    projectDirectoryDraft.value = (await getProjectDirectories(root)).join('\n')
+    projectDirectoriesLoaded.value = true
+  } catch (error) {
+    projectSetupError.value = error instanceof Error ? error.message : '读取项目工作目录失败'
+  } finally {
+    isProjectSetupSubmitting.value = false
+  }
 }
 
 function onRenameThread(payload: { threadId: string; title: string }): void {
@@ -3054,9 +3170,19 @@ function onRespondServerRequest(payload: UiServerRequestReply): void {
 }
 
 async function handleServerRequestResponse(payload: UiServerRequestReply): Promise<void> {
-  const responded = await respondToPendingServerRequest(payload)
+  if (pendingReplyIds.value.has(payload.id)) return
+  const requestThreadId = selectedThreadServerRequests.value.find(request => request.id === payload.id)?.threadId
+  pendingReplyIds.value = new Set([...pendingReplyIds.value, payload.id])
+  let responded = false
+  try {
+    responded = await respondToPendingServerRequest(payload)
+  } finally {
+    const next = new Set(pendingReplyIds.value)
+    next.delete(payload.id)
+    pendingReplyIds.value = next
+  }
   const followUpMessageText = payload.followUpMessageText?.trim() ?? ''
-  if (!responded || !followUpMessageText || isHomeRoute.value) return
+  if (!responded || !followUpMessageText || isHomeRoute.value || selectedThreadId.value !== requestThreadId) return
 
   try {
     await sendMessageToSelectedThread(followUpMessageText, [], [], 'steer', [])
@@ -3065,9 +3191,13 @@ async function handleServerRequestResponse(payload: UiServerRequestReply): Promi
   }
 }
 
-async function onForkThreadFromMessage(payload: { threadId: string; turnIndex: number }): Promise<void> {
-  const forkedThreadId = await forkThreadFromTurn(payload.threadId, payload.turnIndex)
-  if (!forkedThreadId) return
+async function onForkThreadFromMessage(payload: { threadId: string; turnId: string }): Promise<void> {
+  threadHistoryActionError.value = ''
+  const forkedThreadId = await forkThreadFromTurn(payload.threadId, payload.turnId)
+  if (!forkedThreadId) {
+    if (selectedThreadId.value === payload.threadId) threadHistoryActionError.value = desktopError.value || '无法创建历史分支。'
+    return
+  }
   await router.push({ name: 'thread', params: { threadId: forkedThreadId } })
   if (selectedThreadId.value !== forkedThreadId) {
     await selectThread(forkedThreadId)
@@ -3075,7 +3205,7 @@ async function onForkThreadFromMessage(payload: { threadId: string; turnIndex: n
   if (isMobile.value) setSidebarCollapsed(true)
 }
 
-function setSidebarCollapsed(nextValue: boolean): void {
+function setSidebarCollapsed(nextValue: boolean, persistDesktopPreference = !isMobile.value): void {
   if (isSidebarCollapsed.value === nextValue) return
   if (nextValue) {
     const currentScrollTop = getSidebarScrollableElement()?.scrollTop
@@ -3084,7 +3214,10 @@ function setSidebarCollapsed(nextValue: boolean): void {
     }
   }
   isSidebarCollapsed.value = nextValue
-  saveSidebarCollapsed(nextValue)
+  if (persistDesktopPreference) {
+    desktopSidebarCollapsed = nextValue
+    saveSidebarCollapsed(nextValue)
+  }
   if (!nextValue) {
     restoreSidebarScrollPosition()
   }
@@ -3341,19 +3474,6 @@ function onDocumentPointerDown(event: PointerEvent): void {
       resetTerminalKeyboardFocusState()
     }
   }
-  if (!isSettingsOpen.value) return
-  if (settingsPanelRef.value?.contains(target)) return
-  if (settingsButtonRef.value?.contains(target)) return
-  isSettingsOpen.value = false
-}
-
-function onSettingsAreaClick(event: MouseEvent): void {
-  if (!isSettingsOpen.value) return
-  const target = event.target
-  if (!(target instanceof Node)) return
-  if (settingsPanelRef.value?.contains(target)) return
-  if (settingsButtonRef.value?.contains(target)) return
-  isSettingsOpen.value = false
 }
 
 function onDocumentVisibilityChange(): void {
@@ -3412,46 +3532,167 @@ async function syncAfterMobileResume(): Promise<void> {
   }
 }
 
-function onSubmitThreadMessage(payload: { text: string; imageUrls: string[]; fileAttachments: Array<{ label: string; path: string; fsPath: string }>; skills: Array<{ name: string; path: string }>; mode: 'steer' | 'queue' }): void {
-  const text = payload.text
-  scheduleMobileConversationJumpToLatest()
-  const editingState = editingQueuedMessageState.value
-  const queueInsertIndex =
-    payload.mode === 'queue'
-    && editingState
-    && editingState.threadId === selectedThreadId.value
-      ? editingState.queueIndex
-      : undefined
-  editingQueuedMessageState.value = null
-  if (isHomeRoute.value) {
-    void submitFirstMessageForNewThread(text, payload.imageUrls, payload.skills, payload.fileAttachments)
+useAccountQuotaUpdates(accounts)
+const { marks: quotaResumeMarks, error: quotaResumeError, toggle: toggleQuotaResume } = useQuotaResume()
+const goalThreadIds = computed(() => projectGroups.value.flatMap(group => group.threads.map(thread => thread.id)))
+const goalSelectedThreadId = computed(() => isHomeRoute.value ? '' : selectedThreadId.value || '')
+const pendingCompactionRequest = computed(() => ['requested', 'unknown'].includes(compactionRequests.value[goalSelectedThreadId.value]?.status ?? ''))
+const { goals: threadGoals, selectedGoal, error: threadGoalsError, update: updateThreadGoal, refresh: refreshThreadGoals } = useThreadGoals(goalThreadIds, goalSelectedThreadId)
+const isTaskSearchOpen = ref(false)
+const taskReturnId = computed(() => {
+  const id = taskId(route.query.fromTask)
+  return id && id !== selectedThreadId.value && id !== selectedThread.value?.task?.parentThreadId ? id : ''
+})
+async function onOpenRelatedTask(threadId: string) {
+  const id = taskId(threadId)
+  if (!id) return
+  isTaskSearchOpen.value = false
+  const from = selectedThreadId.value
+  await router.push({ name: 'thread', params: { threadId: id }, query: from && from !== id ? { fromTask: from } : {} })
+}
+async function onReturnTask(threadId: string) {
+  if (!taskId(threadId)) return
+  await router.push({ name: 'thread', params: { threadId } })
+}
+async function onInsertTaskExcerpt(text: string) {
+  if (isSwitchingAccounts.value || selectedThread.value?.task?.canAcceptDirectInput === false) return
+  const contextId = composerThreadContextId.value
+  const composer = isHomeRoute.value ? homeThreadComposerRef.value : threadComposerRef.value
+  if (!composer) return
+  isTaskSearchOpen.value = false
+  await nextTick()
+  if (contextId !== composerThreadContextId.value) return
+  composer.appendTextToDraft(text)
+}
+watch(() => selectedThreadId.value, () => { isTaskSearchOpen.value = false })
+const appCommandRequest = ref<AppCommandRequest | null>(null)
+const commandContextSummary = computed(() => {
+  if (isHomeRoute.value) return '新会话尚无上下文用量'
+  const usage = selectedThreadTokenUsage.value
+  if (!usage) return '暂无用量信息'
+  return `${usage.currentContextTokens.toLocaleString()} tokens${usage.modelContextWindow ? ` / ${usage.modelContextWindow.toLocaleString()}` : ''}`
+})
+function onComposerCommand(request: AppCommandRequest) {
+  if (isSwitchingAccounts.value) return
+  if (['new', 'resume', 'tasks', 'apps', 'plugins', 'mcp', 'automations', 'diff', 'copy', 'export'].includes(request.name)) {
+    const navigation = ['new', 'resume', 'tasks', 'apps', 'plugins', 'mcp', 'automations', 'diff'].includes(request.name)
+    if (navigation) request.complete()
+    void runAppCommand(request.name).then(() => { if (!navigation) request.complete() }).catch(cause => { desktopError.value = cause instanceof Error ? cause.message : '命令执行失败' })
     return
   }
-  void sendMessageToSelectedThread(text, payload.imageUrls, payload.skills, payload.mode, payload.fileAttachments, queueInsertIndex)
+  appCommandRequest.value = request
+}
+function onGoalModelChange(model: string, effort: string): void {
+  setSelectedModelIdForThread(composerThreadContextId.value, model)
+  setSelectedReasoningEffort(effort)
+}
+async function ensureCommandThread(objective?: string): Promise<string> {
+  if (!isHomeRoute.value && selectedThreadId.value) return selectedThreadId.value
+  const created = await startThread(composerCwd.value || undefined, composerSelectedModelId.value || undefined)
+  if (objective) await renameThreadById(created.threadId, '持续目标 · ' + [...objective.split('\n')[0]!].slice(0, 60).join(''))
+  return created.threadId
+}
+async function runAppCommand(name: AppCommandName, value?: string): Promise<void> {
+  const threadId = isHomeRoute.value ? '' : selectedThreadId.value || ''
+  if (['rename', 'fork', 'review', 'diff', 'copy', 'export'].includes(name) && !threadId) throw new Error('请先进入一个会话')
+  if (['review', 'fork'].includes(name) && isSelectedThreadInProgress.value) throw new Error('请等待当前任务结束后再操作')
+  switch (name) {
+    case 'goal':
+      if (!value) throw new Error('缺少目标会话')
+      await router.push({ name: 'thread', params: { threadId: value } }); break
+    case 'new': onStartNewThreadFromToolbar(); break
+    case 'tasks': isTaskSearchOpen.value = true; break
+    case 'resume':
+      setSidebarCollapsed(false); isSidebarSearchVisible.value = true
+      await nextTick(); sidebarSearchInputRef.value?.focus(); break
+    case 'rename': await renameThreadById(threadId, value || '未命名会话'); break
+    case 'fork': await onForkThread(threadId); break
+    case 'review': await startThreadReview(threadId, 'workspace', 'unstaged'); break
+    case 'diff': isReviewPaneOpen.value = true; break
+    case 'copy': await copyTextToClipboard(await getLatestCompletedReply(threadId)); break
+    case 'export': downloadProjectZipFallback(new Blob([buildThreadMarkdown()], { type: 'text/markdown;charset=utf-8' }), `codex-${threadId}.md`); break
+    case 'apps': case 'plugins': case 'mcp':
+      await openDirectory(name === 'mcp' ? 'skills' : name); break
+    case 'automations': await router.push({ name: 'automations' }); break
+    default: throw new Error('该命令尚未接入可执行操作')
+  }
 }
 
-function onEditQueuedMessage(messageId: string): void {
-  const queueIndex = selectedThreadQueuedMessages.value.findIndex((item) => item.id === messageId)
-  const message = queueIndex >= 0 ? selectedThreadQueuedMessages.value[queueIndex] : undefined
-  const composer = threadComposerRef.value
-  if (!message || !composer) return
-
-  if (composer.hasUnsavedDraft()) {
-    const shouldReplace = window.confirm('Replace the current draft with this queued message for editing?')
-    if (!shouldReplace) return
+async function onDeliveryAcknowledged(submission: PendingWebDelivery): Promise<void> {
+  if (submission.body.threadId === selectedThreadId.value && !editingQueuedMessageState.value) {
+    threadComposerRef.value?.acknowledgeDraft(submission.body.message)
   }
+  await refreshQueueState().catch(() => {})
+}
 
-  editingQueuedMessageState.value = selectedThreadId.value
-    ? { threadId: selectedThreadId.value, queueIndex }
-    : null
-  const payload: ComposerDraftPayload = {
-    text: message.text,
-    imageUrls: [...message.imageUrls],
-    fileAttachments: message.fileAttachments.map((attachment) => ({ ...attachment })),
-    skills: message.skills.map((skill) => ({ ...skill })),
+function onSubmitThreadMessage(payload: { text: string; imageUrls: string[]; fileAttachments: Array<{ label: string; path: string; fsPath: string }>; skills: Array<{ name: string; path: string }>; mode: 'steer' | 'queue'; complete?: (saved: boolean) => void }): void {
+  scheduleMobileConversationJumpToLatest()
+  const editing = editingQueuedMessageState.value
+  if (isHomeRoute.value) {
+    void submitFirstMessageForNewThread(payload.text, payload.imageUrls, payload.skills, payload.fileAttachments)
+      .then(saved => payload.complete?.(saved))
+    return
   }
-  composer.hydrateDraft(payload)
-  removeQueuedMessage(messageId)
+  queueDraftError.value = ''
+  const saving = editing
+    ? updateQueuedMessage(editing.threadId, editing.messageId, editing.revision, editing.editToken, payload)
+    : sendMessageToSelectedThread(payload.text, payload.imageUrls, payload.skills, payload.mode, payload.fileAttachments)
+  void saving.then(() => {
+    if (editing) saveQueueDraftEdit(editing.threadId, null)
+    payload.complete?.(true)
+  }).catch(cause => {
+    queueDraftError.value = cause instanceof Error ? cause.message : '保存失败，请重试'
+    payload.complete?.(false)
+  })
+}
+
+async function onEditQueuedMessage(messageId: string): Promise<void> {
+  if (editingQueuedMessageState.value?.messageId === messageId) return
+  if (threadComposerRef.value?.hasUnsavedDraft()) {
+    replaceQueueDraftId.value = messageId
+    return
+  }
+  await hydrateQueuedMessage(messageId)
+}
+
+async function hydrateQueuedMessage(messageId: string): Promise<void> {
+  replaceQueueDraftId.value = ''
+  const threadId = selectedThreadId.value
+  const message = await beginQueuedMessageEdit(messageId)
+  if (!message?.delivery?.editToken) return
+  const edit = { threadId, messageId, revision: message.delivery.revision, editToken: message.delivery.editToken, draftKey: `${threadId}:queue-edit:${createDeliveryId()}` }
+  try {
+    if (selectedThreadId.value === threadId) threadComposerRef.value?.hydrateDraft({ text: '', imageUrls: [], fileAttachments: [], skills: [] })
+    await nextTick()
+    saveQueueDraftEdit(threadId, edit)
+    await nextTick()
+    if (selectedThreadId.value !== threadId) return
+    const payload: ComposerDraftPayload = {
+      text: message.text, imageUrls: [...message.imageUrls],
+      fileAttachments: message.fileAttachments.map(row => ({ ...row })),
+      skills: message.skills.map(row => ({ ...row })),
+    }
+    threadComposerRef.value?.hydrateDraft(payload)
+  } catch {
+    queueDraftError.value = '未能保存编辑关联；原消息仍保留在队列中，可点击“继续编辑”恢复'
+  }
+}
+
+async function resumeQueuedMessage(messageId: string): Promise<void> {
+  const threadId = selectedThreadId.value
+  await changeQueuedMessage(messageId, 'resume')
+  const row = selectedThreadQueuedMessages.value.find(message => message.id === messageId)
+  if (row?.delivery?.status === 'editing') return
+  if (queueDraftEdits.value[threadId]?.messageId === messageId) {
+    saveQueueDraftEdit(threadId, null)
+    if (selectedThreadId.value === threadId) threadComposerRef.value?.hydrateDraft({ text: '', imageUrls: [], skills: [], fileAttachments: [] })
+  }
+}
+
+async function deleteQueuedMessage(messageId: string): Promise<void> {
+  const threadId = selectedThreadId.value
+  const removed = await removeQueuedMessage(messageId)
+  if (removed && queueDraftEdits.value[threadId]?.messageId === messageId) saveQueueDraftEdit(threadId, null)
 }
 
 
@@ -3715,12 +3956,13 @@ function clearCommitReviewContext(): void {
 }
 
 async function onOpenProjectSetupModal(): Promise<void> {
-  const baseDir = await resolveProjectBaseDirectory()
-  if (!baseDir) return
-
-  await refreshDefaultProjectName()
-  projectSetupBaseDir.value = baseDir
-  projectNameDraft.value = defaultNewProjectName.value.trim() || 'New Project (1)'
+  projectEditingId.value = ''
+  projectDirectoryDraft.value = ''
+  projectDirectoriesLoaded.value = true
+  projectNameEdited.value = false
+  projectSetupBaseDir.value = ''
+  projectCloneBaseDir.value = await resolveProjectBaseDirectory()
+  projectNameDraft.value = projectDisplayName(projectSetupBaseDir.value, workspaceRootOptionsState.value.labels)
   githubCloneUrlDraft.value = ''
   projectSetupError.value = ''
   projectSetupMode.value = 'create'
@@ -3735,22 +3977,12 @@ function onCloseProjectSetupModal(): void {
 }
 
 async function createProjectFromSetupModal(): Promise<string> {
-  const baseDir = projectSetupBaseDir.value.trim()
-  const normalizedProjectName = projectNameDraft.value.trim()
-  if (!isProjectNameDraftValid.value) {
-    throw new Error('Enter a single project folder name.')
-  }
-  const targetPath = normalizeAbsolutePath(joinPath(baseDir, normalizedProjectName))
-  if (!targetPath) return ''
-
-  return openProjectRoot(targetPath, {
-    createIfMissing: true,
-    label: '',
-  })
+  const input = projectSetupInput(normalizeAbsolutePath(projectSetupBaseDir.value), projectNameDraft.value)
+  return openProjectRoot(input.path, { ...input.options, createIfMissing: !projectEditingId.value, directories: projectDirectoryDraft.value.split('\n').map(path => path.trim()).filter(Boolean) })
 }
 
 async function cloneGithubRepositoryFromSetupModal(): Promise<string> {
-  const baseDir = projectSetupBaseDir.value.trim()
+  const baseDir = projectCloneBaseDir.value.trim()
   const normalizedRepoUrl = githubCloneUrlDraft.value.trim()
   if (!normalizedRepoUrl) return ''
 
@@ -3769,10 +4001,10 @@ async function onSubmitProjectSetup(): Promise<void> {
         : await createProjectFromSetupModal()
     if (!normalizedPath) return
 
-    newThreadCwd.value = normalizedPath
+    if (projectEditingId.value) renameProject(projectEditingId.value, projectNameDraft.value.trim())
+    else newThreadCwd.value = normalizedPath
     pinProjectToTop(getProjectOrderNameForPath(normalizedPath))
     await loadWorkspaceRootOptionsState()
-    await refreshDefaultProjectName()
     isProjectSetupModalOpen.value = false
   } catch (error) {
     projectSetupError.value = error instanceof Error ? error.message : 'Failed to create or clone project.'
@@ -4174,8 +4406,11 @@ function onInterruptTurn(): void {
   void interruptSelectedThreadTurn()
 }
 
-function onRollback(payload: { turnId: string }): void {
+async function onRollback(payload: { turnId: string }): Promise<void> {
+  const threadId = selectedThreadId.value
+  threadHistoryActionError.value = ''
   const targetTurnId = payload.turnId.trim()
+  let draft = ''
   if (targetTurnId.length > 0) {
     const rollbackUserMessage = [...filteredMessages.value]
       .reverse()
@@ -4184,11 +4419,15 @@ function onRollback(payload: { turnId: string }): void {
         && (message.turnId?.trim() ?? '') === targetTurnId
         && message.text.trim().length > 0
       ))
-    if (rollbackUserMessage?.text && threadComposerRef.value) {
-      threadComposerRef.value.appendTextToDraft(rollbackUserMessage.text)
-    }
+    draft = rollbackUserMessage?.text ?? ''
   }
-  void rollbackSelectedThread(payload.turnId)
+  const rolledBack = await rollbackSelectedThread(payload.turnId)
+  if (!rolledBack && selectedThreadId.value === threadId) {
+    threadHistoryActionError.value = desktopError.value || '无法撤回历史。'
+  }
+  if (rolledBack && selectedThreadId.value === threadId && draft) {
+    threadComposerRef.value?.appendTextToDraft(draft)
+  }
 }
 
 function onImplementPlan(payload: { turnId: string }): void {
@@ -4199,23 +4438,13 @@ function onImplementPlan(payload: { turnId: string }): void {
 }
 
 
-async function copySelectedThreadChat(): Promise<void> {
-  if (isHomeRoute.value || isSkillsRoute.value || isAutomationsRoute.value) return
-  if (!selectedThread.value || filteredMessages.value.length === 0) return
-  const markdown = buildThreadMarkdown()
-  try {
-    await copyTextToClipboard(markdown)
-  } catch {
-    // Clipboard writes can be blocked by browser permissions; keep the menu action best-effort.
-  }
-}
 
 function buildThreadMarkdown(): string {
   const lines: string[] = []
   const threadTitle = selectedThread.value?.title?.trim() || 'Untitled thread'
   lines.push(`# ${escapeMarkdownText(threadTitle)}`)
   lines.push('')
-  lines.push(`- Exported: ${new Date().toISOString()}`)
+  lines.push(`- Exported: ${formatLocalDateTime(Date.now(), { second: '2-digit' })} (${displayTimeZone()})`)
   lines.push(`- Thread ID: ${selectedThread.value?.id ?? ''}`)
   lines.push('')
   lines.push('---')
@@ -4285,12 +4514,6 @@ function loadDarkModePref(): 'system' | 'light' | 'dark' {
   return 'system'
 }
 
-function loadInProgressSendModePref(): 'steer' | 'queue' {
-  if (typeof window === 'undefined') return 'steer'
-  const v = window.localStorage.getItem(IN_PROGRESS_SEND_MODE_KEY)
-  if (v === 'steer' || v === 'queue') return v
-  return 'queue'
-}
 
 function loadChatWidthPref(): ChatWidthMode {
   if (typeof window === 'undefined') return 'standard'
@@ -4303,13 +4526,9 @@ function toggleSendWithEnter(): void {
   window.localStorage.setItem(SEND_WITH_ENTER_KEY, sendWithEnter.value ? '1' : '0')
 }
 
-function cycleInProgressSendMode(): void {
-  inProgressSendMode.value = inProgressSendMode.value === 'steer' ? 'queue' : 'steer'
-  window.localStorage.setItem(IN_PROGRESS_SEND_MODE_KEY, inProgressSendMode.value)
-}
 
 function cycleDarkMode(): void {
-  const order: Array<'system' | 'light' | 'dark'> = ['system', 'light', 'dark']
+  const order: Array<'system' | 'light' | 'dark'> = ['dark', 'light', 'system']
   const idx = order.indexOf(darkMode.value)
   darkMode.value = order[(idx + 1) % order.length]
   window.localStorage.setItem(DARK_MODE_KEY, darkMode.value)
@@ -4467,7 +4686,7 @@ async function clearFreeModeCustomKey(): Promise<void> {
   }
 }
 
-async function loadFreeModeStatus(): Promise<void> {
+async function loadFreeModeStatus(options: { refreshModels?: boolean } = {}): Promise<void> {
   try {
     const previousProvider = selectedProvider.value
     const status = await getFreeModeStatus()
@@ -4493,7 +4712,7 @@ async function loadFreeModeStatus(): Promise<void> {
       externalAuthImportAttempted = false
     }
     const providerChanged = selectedProvider.value !== previousProvider
-    if (providerChanged) {
+    if (providerChanged && options.refreshModels !== false) {
       await refreshAll({
         includeSelectedThreadMessages: false,
         providerChanged: true,
@@ -4726,7 +4945,7 @@ watch(
   async (threadId) => {
     if (!hasInitialized.value) return
     if (isRouteSyncInProgress.value) return
-    if (isHomeRoute.value || isSkillsRoute.value || isAutomationsRoute.value) return
+    if (isHomeRoute.value || isSkillsRoute.value || isAutomationsRoute.value || isApiProxyRoute.value || isSettingsRoute.value) return
 
     if (!threadId) {
       if (route.name !== 'home') {
@@ -4820,6 +5039,8 @@ watch(
 watch(
   () => route.name,
   (name) => {
+    if (name === 'home' && selectedThreadId.value === '') initializeWebConversation('')
+    if (name === 'thread' && routeThreadId.value === selectedThreadId.value) initializeWebConversation(selectedThreadId.value)
     if (name !== 'home') {
       worktreeInitStatus.value = { phase: 'idle', title: '', message: '' }
     }
@@ -4864,9 +5085,8 @@ watch(
 
 
 watch(isMobile, (mobile) => {
-  if (mobile && !isSidebarCollapsed.value) {
-    setSidebarCollapsed(true)
-  }
+  // A temporary mobile drawer must not overwrite the desktop preference.
+  setSidebarCollapsed(mobile ? true : desktopSidebarCollapsed, false)
 }, { immediate: true })
 
 async function submitFirstMessageForNewThread(
@@ -4874,7 +5094,7 @@ async function submitFirstMessageForNewThread(
   imageUrls: string[] = [],
   skills: Array<{ name: string; path: string }> = [],
   fileAttachments: Array<{ label: string; path: string; fsPath: string }> = [],
-): Promise<void> {
+): Promise<boolean> {
   try {
     worktreeInitStatus.value = { phase: 'idle', title: '', message: '' }
     let targetCwd = newThreadCwd.value
@@ -4895,7 +5115,7 @@ async function submitFirstMessageForNewThread(
           title: t('Worktree setup failed'),
           message: t('Unable to create worktree. Try again or switch to Local project.'),
         }
-        return
+        return false
       }
     } else if (!targetCwd.trim()) {
       const directory = await createProjectlessThreadDirectory(text)
@@ -4903,11 +5123,18 @@ async function submitFirstMessageForNewThread(
       newThreadCwd.value = directory.cwd
     }
     const threadId = await sendMessageToNewThread(text, targetCwd, imageUrls, skills, fileAttachments)
-    if (!threadId) return
+    if (!threadId) return false
     await router.replace({ name: 'thread', params: { threadId } })
     scheduleMobileConversationJumpToLatest()
-  } catch {
-    // Error is already reflected in state.
+    return true
+  } catch (cause) {
+    const createdThreadId = (cause as { createdThreadId?: string })?.createdThreadId
+    if (createdThreadId && isHomeRoute.value) {
+      await router.replace({ name: 'thread', params: { threadId: createdThreadId } })
+      await nextTick()
+      if (selectedThreadId.value === createdThreadId) threadComposerRef.value?.hydrateDraft({ text, imageUrls, skills, fileAttachments })
+    }
+    return false
   }
 }
 
@@ -5263,90 +5490,6 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
   display: none;
 }
 
-.new-thread-launch-card {
-  @apply mt-4 w-full max-w-3xl rounded-[28px] border border-emerald-200 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.2),_transparent_42%),linear-gradient(135deg,_#f4fff8,_#ffffff_58%)] px-5 py-5 text-left shadow-[0_18px_50px_-28px_rgba(5,150,105,0.45)];
-}
-
-.new-thread-launch-card-copy {
-  @apply flex flex-col gap-2;
-}
-
-.new-thread-launch-card-topline {
-  @apply flex items-center gap-2;
-}
-
-.new-thread-launch-card-badge {
-  @apply flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-emerald-700 text-white shadow-[0_12px_28px_-18px_rgba(5,150,105,0.9)];
-}
-
-.new-thread-launch-card-badge :deep(svg) {
-  @apply h-4 w-4;
-}
-
-.new-thread-launch-card-eyebrow {
-  @apply m-0 text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-700;
-}
-
-.new-thread-launch-card-title {
-  @apply m-0 text-xl font-semibold leading-tight text-zinc-950 sm:text-2xl;
-}
-
-.new-thread-launch-card-text {
-  @apply m-0 max-w-2xl text-sm leading-6 text-zinc-700 sm:text-[15px];
-}
-
-.new-thread-launch-card-actions {
-  @apply mt-4 flex flex-wrap items-center gap-2;
-}
-
-.new-thread-launch-card-pills {
-  @apply mt-1 flex flex-wrap gap-2;
-}
-
-.new-thread-launch-card-pill {
-  @apply inline-flex items-center rounded-full border border-emerald-100 bg-white/80 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-700;
-}
-
-.new-thread-launch-card-button {
-  @apply inline-flex h-10 items-center justify-center rounded-full border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50;
-}
-
-.new-thread-launch-card-button-primary {
-  @apply border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-600;
-}
-
-:global(:root.dark) .new-thread-launch-card {
-  @apply border-emerald-900/80 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.2),_transparent_38%),linear-gradient(135deg,_rgba(6,78,59,0.32),_rgba(24,24,27,0.96)_58%)] shadow-[0_24px_64px_-34px_rgba(16,185,129,0.35)];
-}
-
-:global(:root.dark) .new-thread-launch-card-eyebrow {
-  @apply text-emerald-300;
-}
-
-:global(:root.dark) .new-thread-launch-card-badge {
-  @apply bg-emerald-500 text-white;
-}
-
-:global(:root.dark) .new-thread-launch-card-title {
-  @apply text-zinc-50;
-}
-
-:global(:root.dark) .new-thread-launch-card-text {
-  @apply text-zinc-300;
-}
-
-:global(:root.dark) .new-thread-launch-card-pill {
-  @apply border-emerald-900 bg-zinc-900/70 text-emerald-300;
-}
-
-:global(:root.dark) .new-thread-launch-card-button {
-  @apply border-zinc-700 bg-zinc-900 text-zinc-100 hover:bg-zinc-800;
-}
-
-:global(:root.dark) .new-thread-launch-card-button-primary {
-  @apply border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-500;
-}
-
 .new-thread-folder-action {
   @apply inline-flex h-9 items-center justify-center rounded-full border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
 }
@@ -5693,6 +5836,10 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
   @apply mb-2 rounded-md bg-rose-50 px-2 py-1.5 text-xs text-rose-700;
 }
 
+.sidebar-settings-account-notice {
+  @apply mb-2 rounded-md bg-emerald-50 px-2 py-1.5 text-xs leading-4 text-emerald-700;
+}
+
 .sidebar-settings-account-refresh {
   @apply shrink-0 rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
 }
@@ -5711,6 +5858,10 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 
 .sidebar-settings-account-empty {
   @apply text-xs text-zinc-500;
+}
+
+.sidebar-settings-account-help {
+  @apply mb-2 text-[11px] leading-4 text-zinc-500;
 }
 
 .codex-login-modal-backdrop {
@@ -5811,12 +5962,16 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
   @apply border-rose-200 bg-rose-50;
 }
 
+.sidebar-settings-account-item.is-warning {
+  @apply border-amber-200 bg-amber-50;
+}
+
 .sidebar-settings-account-main {
   @apply min-w-0 flex-1;
 }
 
 .sidebar-settings-account-actions {
-  @apply flex w-24 shrink-0 flex-col items-end gap-1.5;
+  @apply flex w-28 shrink-0 flex-col items-stretch gap-1;
 }
 
 .sidebar-settings-account-email {
@@ -5825,6 +5980,21 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 
 .sidebar-settings-account-meta {
   @apply truncate text-[11px] text-zinc-500;
+}
+
+.sidebar-settings-account-status {
+  @apply mt-1 inline-flex rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700;
+}
+
+.sidebar-settings-account-status[data-status='reauth_required'],
+.sidebar-settings-account-status[data-status='payment_required'],
+.sidebar-settings-account-status[data-status='materialization_dirty'] {
+  @apply bg-rose-100 text-rose-700;
+}
+
+.sidebar-settings-account-status[data-status='stale'],
+.sidebar-settings-account-status[data-status='transient_error'] {
+  @apply bg-amber-100 text-amber-700;
 }
 
 .sidebar-settings-account-quota {
@@ -5845,6 +6015,10 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 
 .sidebar-settings-account-switch {
   @apply min-w-[4.75rem] shrink-0 rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-center text-xs text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
+}
+
+.sidebar-settings-account-secondary {
+  @apply shrink-0 rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-center text-[10px] leading-4 text-zinc-600 transition hover:bg-zinc-50 disabled:cursor-default disabled:opacity-60;
 }
 
 .sidebar-settings-account-remove {
