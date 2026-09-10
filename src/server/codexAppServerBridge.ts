@@ -1,6 +1,39 @@
+import { readProjectDirectories, saveProjectDirectories } from './projectDirectories.js'
+import { ThreadCompletionList } from './threadCompletionList.js'
+import { AccountResourcePool } from './accountResourcePool.js'
+import { resolveAccountSelection, type AccountExecutionLease } from './accountExecution.js'
+import { DirectoryMcpReader } from './directoryMcpReader.js'
+import { BackgroundTerminalReader, threadsWithBackgroundTerminals } from './backgroundTerminalReader.js'
+import { ProcessActivityStore } from './processActivityStore.js'
+import { readCommandToolOutput } from './commandToolOutput.js'
+import { hookRunKey, readCommandOutput, readHookConfiguration } from '../processActivity.js'
+import { extractTaskExcerpt } from '../taskExcerpt'
+import { maySupplementImportedThreads } from './threadListCompatibility'
+import { changesThreadSearch } from '../threadSearchEvents.js'
+import { deliveryView } from '../delivery.js'
+import { DeliveryStore } from './deliveryStore.js'
+import { DeliveryService } from './deliveryService.js'
+import { inspectDelivery } from './deliveryHistory.js'
+import { ThreadSearch, SEARCH_BODY_TURN_LIMIT, extractThreadSearchText } from './threadSearch.js'
+import { ThreadHistory } from './threadHistory.js'
+import { AuthRecoveryRegistry } from '../authRecovery'
+import { MethodCatalog } from './runtimeCapabilities.js'
+import { version as appVersion } from '../../package.json'
+import { capabilityValue } from '../modelCapabilities.js'
+import { normalizeStoredQueuedMessage, normalizeThreadQueueState, type StoredQueuedMessage, type ThreadQueueState } from '../threadQueue.js'
+import { ThreadGoalReader } from './threadGoalReader.js'
+import { ThreadCompactionGate } from './threadCompactionGate.js'
+import { normalizeAutomationModelSettings } from '../automationOptions.js'
+import { AutomationEngine } from './automationEngine.js'
+import { ThreadQuotaResume } from './threadQuotaResume.js'
+import { boundedQuotaRead } from '../quotaRefresh.js'
+import { createAutomationRuntime } from './automationRuntime.js'
+import { createAutomationSchedule, validateAutomationTimezone } from './automationSchedule.js'
+import { parseAutomationToml, serializeAutomationToml, toAutomationApiRecord, writeAutomationFileAtomic, type ThreadAutomationRecord, type ThreadAutomationStatus } from './automationDefinition.js'
+export { parseAutomationToml, toAutomationApiRecord } from './automationDefinition.js'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rename, rm, mkdir, stat, cp, lstat, readlink, symlink, realpath, utimes } from 'node:fs/promises'
+import { mkdtemp, open, readFile, readdir, rename, rm, mkdir, stat, lstat, realpath, utimes } from 'node:fs/promises'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { request as httpRequest } from 'node:http'
@@ -12,10 +45,12 @@ import { createInterface } from 'node:readline'
 import { once } from 'node:events'
 import { writeFile } from 'node:fs/promises'
 import { handleAccountRoutes } from './accountRoutes.js'
+import { getAccountAuthCoordinator, type RuntimeQuiescenceSnapshot } from './accountAuthCoordinator.js'
+import type { ChatgptAuthTokensRefreshParams, ChatgptAuthTokensRefreshResponse } from './accountTokenRefresh.js'
 import { buildAppServerArgs } from './appServerRuntimeConfig.js'
 import { callRpcWithRateLimitDecodeRecovery } from './rateLimitDecodeRecovery.js'
 import { handleReviewRoutes } from './reviewGit.js'
-import { handleSkillsRoutes, initializeSkillsSyncOnStartup } from './skillsRoutes.js'
+import { handleSkillsRoutes } from './skillsRoutes.js'
 import { TelegramThreadBridge } from './telegramThreadBridge.js'
 import {
   getRandomFreeKey,
@@ -104,134 +139,17 @@ type PendingServerRequest = {
   receivedAtIso: string
 }
 
-type ChatgptAuthTokensRefreshParams = {
-  reason?: string
-  previousAccountId?: string | null
-}
-
-type ChatgptAuthTokensRefreshResponse = {
-  accessToken: string
-  chatgptAccountId: string
-  chatgptPlanType: string | null
-}
-
-type ThreadSearchDocument = {
-  id: string
-  title: string
-  preview: string
-  messageText: string
-  searchableText: string
-}
-
-type ThreadSearchIndex = {
-  docsById: Map<string, ThreadSearchDocument>
-}
-
 type ProviderModelsResponse = {
   data: string[]
   providerId: string
   source: 'provider'
 }
 
-type ComposioUserData = {
-  apiKey: string
-  baseUrl: string
-  webUrl: string
-  orgId: string
-  testUserId: string
-}
-
-type ComposioStatusResponse = {
-  available: boolean
-  authenticated: boolean
-  cliVersion: string
-  email: string
-  defaultOrgName: string
-  defaultOrgId: string
-  webUrl: string
-  baseUrl: string
-  testUserId: string
-}
-
-type ComposioConnectionSummary = {
-  id: string
-  wordId: string
-  alias: string
-  status: string
-  authScheme: string
-  createdAt: string
-  updatedAt: string
-  isComposioManaged: boolean
-  isDisabled: boolean
-}
-
-type ComposioConnectorSummary = {
-  slug: string
-  name: string
-  description: string
-  logoUrl: string
-  latestVersion: string
-  toolsCount: number
-  triggersCount: number
-  isNoAuth: boolean
-  enabled: boolean
-  authModes: string[]
-  activeCount: number
-  totalConnections: number
-  connectionStatuses: string[]
-}
-
-type ComposioToolSummary = {
-  slug: string
-  name: string
-  description: string
-}
-
-type ComposioConnectorDetail = {
-  connector: ComposioConnectorSummary
-  connections: ComposioConnectionSummary[]
-  tools: ComposioToolSummary[]
-  dashboardUrl: string
-}
-
-type ComposioLinkResult = {
-  status: string
-  message: string
-  connectedAccountId: string
-  redirectUrl: string
-  toolkit: string
-  projectType: string
-}
-
-type ComposioLoginResult = {
-  status: string
-  message: string
-  loginUrl: string
-  cliKey: string
-  expiresAt: string
-}
-
-type ComposioInstallResult = {
-  ok: boolean
-  command: string
-  output: string
-}
-
-type ComposioConnectorPage = {
-  data: ComposioConnectorSummary[]
-  nextCursor: string | null
-  total: number
-}
-
-const COMPOSIO_CONNECTORS_PAGE_LIMIT_MAX = 1000
-
 const PROVIDER_MODELS_FETCH_TIMEOUT_MS = 5_000
 
 const THREAD_RESPONSE_TURN_LIMIT = 10
-const THREAD_TURN_PAGE_READ_CACHE_TTL_MS = 30_000
 const THREAD_METHODS_WITH_TURNS = new Set(['thread/read', 'thread/resume', 'thread/fork', 'thread/rollback'])
 const THREAD_METHODS_WITH_THREAD_SNAPSHOT = new Set([...THREAD_METHODS_WITH_TURNS, 'thread/start'])
-const THREAD_SEARCH_FULL_TEXT_THREAD_LIMIT = 100
 const PROJECTLESS_THREAD_DIRECTORY_MAX_ATTEMPTS = 100
 const PROJECTLESS_THREAD_READABLE_DIRECTORY_ATTEMPTS = 20
 const PROJECTLESS_THREAD_SLUG_MAX_LENGTH = 80
@@ -241,7 +159,6 @@ const API_PERF_BODY_MB_THRESHOLD_ENV_KEY = 'CODEXUI_API_PERF_BODY_MB_THRESHOLD'
 const DEFAULT_API_PERF_MS_THRESHOLD = 300
 const DEFAULT_API_PERF_BODY_MB_THRESHOLD = 1
 const MB_DIVISOR = 1024 * 1024
-const COMPOSIO_USER_DATA_PATH = join(homedir(), '.composio', 'user_data.json')
 
 type SessionRecoveredFileChange = {
   path: string
@@ -265,7 +182,12 @@ type SessionRecoveredSkillInput = {
 
 type SessionSkillInputCacheEntry = {
   size: number
-  mtimeMs: number
+  boundary: string
+  mtimeNs: bigint
+  ctimeNs: bigint
+  inode: bigint
+  offset: number
+  currentTurnId: string
   skillsByTurnId: Map<string, SessionRecoveredSkillInput[]>
 }
 
@@ -281,12 +203,11 @@ function parseSessionSkillText(value: string): SessionRecoveredSkillInput | null
   return { name, path }
 }
 
-function buildSessionSkillInputsByTurn(sessionLogRaw: string): Map<string, SessionRecoveredSkillInput[]> {
-  let currentTurnId = ''
-  const skillsByTurnId = new Map<string, SessionRecoveredSkillInput[]>()
+function buildSessionSkillInputsByTurn(sessionLogRaw: string, state = { currentTurnId: '', skillsByTurnId: new Map<string, SessionRecoveredSkillInput[]>() }): Map<string, SessionRecoveredSkillInput[]> {
+  const skillsByTurnId = state.skillsByTurnId
 
   for (const line of sessionLogRaw.split('\n')) {
-    if (!line.trim()) continue
+    if (!line.includes('<skill>') && !line.includes('turn_context') && !line.includes('task_started')) continue
     let row: Record<string, unknown> | null = null
     try {
       row = JSON.parse(line) as Record<string, unknown>
@@ -296,18 +217,18 @@ function buildSessionSkillInputsByTurn(sessionLogRaw: string): Map<string, Sessi
 
     if (row.type === 'turn_context') {
       const payloadRecord = asRecord(row.payload)
-      currentTurnId = readNonEmptyString(payloadRecord?.turn_id) || currentTurnId
+      state.currentTurnId = readNonEmptyString(payloadRecord?.turn_id) || state.currentTurnId
       continue
     }
     if (row.type === 'event_msg') {
       const payloadRecord = asRecord(row.payload)
       if (payloadRecord?.type === 'task_started') {
-        currentTurnId = readNonEmptyString(payloadRecord.turn_id) || currentTurnId
+        state.currentTurnId = readNonEmptyString(payloadRecord.turn_id) || state.currentTurnId
       }
       continue
     }
 
-    if (row.type !== 'response_item' || !currentTurnId) continue
+    if (row.type !== 'response_item' || !state.currentTurnId) continue
     const payloadRecord = asRecord(row.payload)
     if (payloadRecord?.type !== 'message' || payloadRecord.role !== 'user') continue
     const content = Array.isArray(payloadRecord.content) ? payloadRecord.content : []
@@ -317,10 +238,10 @@ function buildSessionSkillInputsByTurn(sessionLogRaw: string): Map<string, Sessi
       if (contentRecord?.type !== 'input_text' || typeof contentRecord.text !== 'string') continue
       const skill = parseSessionSkillText(contentRecord.text)
       if (!skill) continue
-      const existing = skillsByTurnId.get(currentTurnId) ?? []
+      const existing = skillsByTurnId.get(state.currentTurnId) ?? []
       if (!existing.some((item) => item.path === skill.path)) {
         existing.push(skill)
-        skillsByTurnId.set(currentTurnId, existing)
+        skillsByTurnId.set(state.currentTurnId, existing)
       }
     }
   }
@@ -328,25 +249,66 @@ function buildSessionSkillInputsByTurn(sessionLogRaw: string): Map<string, Sessi
   return skillsByTurnId
 }
 
-async function readCachedSessionSkillInputsByTurn(sessionPath: string): Promise<Map<string, SessionRecoveredSkillInput[]>> {
-  const sessionStat = await stat(sessionPath)
-  const cached = sessionSkillInputCache.get(sessionPath)
-  if (cached && cached.size === sessionStat.size && cached.mtimeMs === sessionStat.mtimeMs) {
-    return cached.skillsByTurnId
+async function readSessionBoundary(sessionPath: string, size: number): Promise<string> {
+  const file = await open(sessionPath, 'r')
+  try {
+    const length = Math.min(4096, size)
+    const head = Buffer.alloc(length)
+    const tail = Buffer.alloc(length)
+    await file.read(head, 0, length, 0)
+    await file.read(tail, 0, length, Math.max(0, size - length))
+    return createHash('sha256').update(head).update(tail).digest('hex')
+  } finally {
+    await file.close()
   }
+}
 
-  const sessionLogRaw = await readFile(sessionPath, 'utf8')
-  const skillsByTurnId = buildSessionSkillInputsByTurn(sessionLogRaw)
-  sessionSkillInputCache.set(sessionPath, {
-    size: sessionStat.size,
-    mtimeMs: sessionStat.mtimeMs,
-    skillsByTurnId,
-  })
-  if (sessionSkillInputCache.size > SESSION_SKILL_INPUT_CACHE_LIMIT) {
-    const oldestKey = sessionSkillInputCache.keys().next().value
-    if (oldestKey) sessionSkillInputCache.delete(oldestKey)
+export async function readCachedSessionSkillInputsByTurn(sessionPath: string): Promise<Map<string, SessionRecoveredSkillInput[]>> {
+  const rawInfo = await stat(sessionPath, { bigint: true })
+  const info = { ...rawInfo, size: Number(rawInfo.size) }
+  const cached = sessionSkillInputCache.get(sessionPath)
+  // Rapid rewrites can share filesystem timestamps. Check a bounded prefix and the old EOF too.
+  const unchangedBoundary = cached && info.size >= cached.size && cached.inode === info.ino
+    && await readSessionBoundary(sessionPath, cached.size) === cached.boundary
+  if (cached && unchangedBoundary && cached.size === info.size && cached.mtimeNs === info.mtimeNs && cached.ctimeNs === info.ctimeNs) return cached.skillsByTurnId
+  const canAppend = cached && unchangedBoundary && info.size > cached.size
+  const state: SessionSkillInputCacheEntry = {
+    size: info.size,
+    boundary: await readSessionBoundary(sessionPath, info.size),
+    mtimeNs: info.mtimeNs,
+    ctimeNs: info.ctimeNs,
+    inode: info.ino,
+    offset: canAppend ? cached.offset : 0,
+    currentTurnId: canAppend ? cached.currentTurnId : '',
+    skillsByTurnId: canAppend ? new Map([...cached.skillsByTurnId].map(([id, skills]) => [id, [...skills]])) : new Map(),
   }
-  return skillsByTurnId
+  let pending = Buffer.alloc(0)
+  let skippedBytes = 0
+  if (state.offset < info.size) {
+    for await (const chunk of createReadStream(sessionPath, { start: state.offset, end: info.size - 1 })) {
+      pending = Buffer.concat([pending, chunk as Buffer])
+      let newline: number
+      while ((newline = pending.indexOf(10)) >= 0) {
+        if (!skippedBytes) buildSessionSkillInputsByTurn(pending.subarray(0, newline).toString('utf8'), state)
+        state.offset += skippedBytes + newline + 1
+        skippedBytes = 0
+        pending = pending.subarray(newline + 1)
+      }
+      // Embedded media/tool lines cannot be skill declarations. Bound the partial-line buffer.
+      if (pending.length > 1024 * 1024) {
+        skippedBytes += pending.length
+        pending = Buffer.alloc(0)
+      }
+    }
+  }
+  // Do not advance beyond an incomplete last line; the next append rereads it.
+  sessionSkillInputCache.set(sessionPath, state)
+  while (sessionSkillInputCache.size > SESSION_SKILL_INPUT_CACHE_LIMIT) {
+    const oldestKey = sessionSkillInputCache.keys().next().value
+    if (!oldestKey) break
+    sessionSkillInputCache.delete(oldestKey)
+  }
+  return state.skillsByTurnId
 }
 
 function mergeSessionSkillInputsIntoTurnsFromMap(
@@ -1808,7 +1770,8 @@ ${archivedPredicate};
   }
 }
 
-function mergeImportedThreadsIntoThreadListResult(result: unknown): unknown {
+function mergeImportedThreadsIntoThreadListResult(result: unknown, params: unknown): unknown {
+  if (!maySupplementImportedThreads(params)) return result
   const record = asRecord(result)
   const data = Array.isArray(record?.data) ? record.data : null
   if (!record || !data) return result
@@ -2443,43 +2406,6 @@ async function readProviderModelIdsForProvider(
   return readProviderBackedModelIds(appServer)
 }
 
-function extractThreadMessageText(threadReadPayload: unknown): string {
-  const payload = asRecord(threadReadPayload)
-  const thread = asRecord(payload?.thread)
-  const turns = Array.isArray(thread?.turns) ? thread.turns : []
-  const parts: string[] = []
-
-  for (const turn of turns) {
-    const turnRecord = asRecord(turn)
-    const items = Array.isArray(turnRecord?.items) ? turnRecord.items : []
-    for (const item of items) {
-      const itemRecord = asRecord(item)
-      const type = typeof itemRecord?.type === 'string' ? itemRecord.type : ''
-      if (type === 'agentMessage' && typeof itemRecord?.text === 'string' && itemRecord.text.trim().length > 0) {
-        parts.push(itemRecord.text.trim())
-        continue
-      }
-      if (type === 'userMessage') {
-        const content = Array.isArray(itemRecord?.content) ? itemRecord.content : []
-        for (const block of content) {
-          const blockRecord = asRecord(block)
-          if (blockRecord?.type === 'text' && typeof blockRecord.text === 'string' && blockRecord.text.trim().length > 0) {
-            parts.push(blockRecord.text.trim())
-          }
-        }
-        continue
-      }
-      if (type === 'commandExecution') {
-        const command = typeof itemRecord?.command === 'string' ? itemRecord.command.trim() : ''
-        const output = typeof itemRecord?.aggregatedOutput === 'string' ? itemRecord.aggregatedOutput.trim() : ''
-        if (command) parts.push(command)
-        if (output) parts.push(output)
-      }
-    }
-  }
-
-  return parts.join('\n').trim()
-}
 
 function readNonEmptyString(value: unknown): string {
   return typeof value === 'string' && value.trim().length > 0 ? value : ''
@@ -2696,397 +2622,6 @@ function readBoolean(value: unknown): boolean {
 
 function readNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
-}
-
-type ComposioCliInvocation = { command: string; args: string[]; displayCommand: string }
-
-function buildComposioInvocation(args: string[]): ComposioCliInvocation | null {
-  const overrideCommand = process.env.CODEXUI_COMPOSIO_COMMAND?.trim()
-  if (overrideCommand) {
-    const invocation = getSpawnInvocation(overrideCommand, args)
-    return {
-      command: invocation.command,
-      args: invocation.args,
-      displayCommand: `${overrideCommand} ${args.map(quoteShellTokenIfNeeded).join(' ')}`.trim(),
-    }
-  }
-  return buildInstalledComposioInvocation(args)
-}
-
-function buildInstalledComposioInvocation(args: string[]): ComposioCliInvocation | null {
-  const candidates = [
-    join(homedir(), '.composio', 'composio'),
-    'composio',
-  ]
-  for (const candidate of candidates) {
-    if ((candidate.includes('/') || candidate.includes('\\')) && !existsSync(candidate)) continue
-    const invocation = getSpawnInvocation(candidate, args)
-    return {
-      command: invocation.command,
-      args: invocation.args,
-      displayCommand: `${candidate} ${args.map(quoteShellTokenIfNeeded).join(' ')}`.trim(),
-    }
-  }
-  return null
-}
-
-function probeComposioInvocation(invocation: ComposioCliInvocation): { available: boolean; cliVersion: string; output: string } {
-  const probe = spawnSync(invocation.command, invocation.args, {
-    encoding: 'utf8',
-    env: process.env,
-    windowsHide: true,
-  })
-  const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`.trim()
-  return {
-    available: !probe.error && probe.status === 0,
-    cliVersion: probe.status === 0 ? (probe.stdout ?? '').trim() : '',
-    output,
-  }
-}
-
-function resolveComposioInvocation(args: string[]): ComposioCliInvocation | null {
-  const invocation = buildComposioInvocation(args)
-  const versionInvocation = buildComposioInvocation(['--version'])
-  if (invocation && versionInvocation && probeComposioInvocation(versionInvocation).available) return invocation
-  return null
-}
-
-function parseComposioJson<T>(stdout: string, fallback: string): T {
-  const trimmed = stdout.trim()
-  if (!trimmed) {
-    throw new Error(fallback)
-  }
-  return JSON.parse(trimmed) as T
-}
-
-async function runComposioJson<T>(args: string[], fallback: string): Promise<T> {
-  const invocation = resolveComposioInvocation(args)
-  if (!invocation) {
-    throw new Error('Composio CLI is not installed')
-  }
-  const child = spawn(invocation.command, invocation.args, {
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
-
-  let stdout = ''
-  let stderr = ''
-
-  child.stdout.setEncoding('utf8')
-  child.stderr.setEncoding('utf8')
-  child.stdout.on('data', (chunk) => { stdout += chunk })
-  child.stderr.on('data', (chunk) => { stderr += chunk })
-
-  const exitCode = await new Promise<number>((resolveExit, reject) => {
-    child.once('error', reject)
-    child.once('close', (code) => resolveExit(code ?? 0))
-  })
-
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || fallback)
-  }
-
-  try {
-    return parseComposioJson<T>(stdout, fallback)
-  } catch (error) {
-    const details = stderr.trim() || stdout.trim()
-    throw new Error(details || getErrorMessage(error, fallback))
-  }
-}
-
-async function readComposioUserData(): Promise<ComposioUserData | null> {
-  try {
-    const raw = await readFile(COMPOSIO_USER_DATA_PATH, 'utf8')
-    const payload = asRecord(JSON.parse(raw))
-    if (!payload) return null
-    return {
-      apiKey: readNonEmptyString(payload.api_key),
-      baseUrl: readNonEmptyString(payload.base_url),
-      webUrl: readNonEmptyString(payload.web_url),
-      orgId: readNonEmptyString(payload.org_id),
-      testUserId: readNonEmptyString(payload.test_user_id),
-    }
-  } catch {
-    return null
-  }
-}
-
-function normalizeComposioConnection(value: unknown): ComposioConnectionSummary | null {
-  const record = asRecord(value)
-  if (!record) return null
-  const authConfig = asRecord(record.auth_config)
-  return {
-    id: readNonEmptyString(record.id),
-    wordId: readNonEmptyString(record.word_id),
-    alias: readNonEmptyString(record.alias),
-    status: readNonEmptyString(record.status),
-    authScheme: readNonEmptyString(record.authScheme || authConfig?.auth_scheme),
-    createdAt: readNonEmptyString(record.created_at),
-    updatedAt: readNonEmptyString(record.updated_at),
-    isComposioManaged: readBoolean(authConfig?.is_composio_managed),
-    isDisabled: readBoolean(record.is_disabled),
-  }
-}
-
-function normalizeComposioToolkit(value: unknown, connectionsBySlug: Map<string, ComposioConnectionSummary[]>): ComposioConnectorSummary | null {
-  const record = asRecord(value)
-  if (!record) return null
-  const slug = readNonEmptyString(record.slug)
-  if (!slug) return null
-  const connectionRows = connectionsBySlug.get(slug) ?? []
-  return {
-    slug,
-    name: readNonEmptyString(record.name),
-    description: readNonEmptyString(record.description),
-    logoUrl: readNonEmptyString(record.logo || record.meta && asRecord(record.meta)?.logo),
-    latestVersion: readNonEmptyString(record.latest_version || record.latestVersion),
-    toolsCount: readNumber(record.tools_count),
-    triggersCount: readNumber(record.triggers_count),
-    isNoAuth: readBoolean(record.is_no_auth),
-    enabled: record.enabled !== false,
-    authModes: Array.isArray(record.auth_modes) ? record.auth_modes.map(readNonEmptyString).filter(Boolean) : [],
-    activeCount: connectionRows.filter((row) => row.status === 'ACTIVE' && !row.isDisabled).length,
-    totalConnections: connectionRows.length,
-    connectionStatuses: [...new Set(connectionRows.map((row) => row.status).filter(Boolean))],
-  }
-}
-
-function normalizeComposioTool(value: unknown): ComposioToolSummary | null {
-  const record = asRecord(value)
-  if (!record) return null
-  const slug = readNonEmptyString(record.slug)
-  if (!slug) return null
-  return {
-    slug,
-    name: readNonEmptyString(record.name),
-    description: readNonEmptyString(record.description),
-  }
-}
-
-async function readComposioConnectionsBySlug(): Promise<Map<string, ComposioConnectionSummary[]>> {
-  const payload = asRecord(await runComposioJson<Record<string, unknown>>(['connections', 'list'], 'Failed to list Composio connections'))
-  const bySlug = new Map<string, ComposioConnectionSummary[]>()
-  for (const [slug, rawRows] of Object.entries(payload ?? {})) {
-    if (!Array.isArray(rawRows)) continue
-    const rows = rawRows.map(normalizeComposioConnection).filter((row): row is ComposioConnectionSummary => row !== null)
-    bySlug.set(slug, rows)
-  }
-  return bySlug
-}
-
-async function readComposioStatus(): Promise<ComposioStatusResponse> {
-  const versionInvocation = buildComposioInvocation(['--version'])
-  const probe = versionInvocation
-    ? probeComposioInvocation(versionInvocation)
-    : { available: false, cliVersion: '', output: '' }
-  const available = probe.available
-  const cliVersion = probe.cliVersion
-  const userData = await readComposioUserData()
-  if (!available) {
-    return {
-      available: false,
-      authenticated: false,
-      cliVersion,
-      email: '',
-      defaultOrgName: '',
-      defaultOrgId: userData?.orgId ?? '',
-      webUrl: userData?.webUrl ?? '',
-      baseUrl: userData?.baseUrl ?? '',
-      testUserId: userData?.testUserId ?? '',
-    }
-  }
-
-  try {
-    const payload = asRecord(await runComposioJson<Record<string, unknown>>(['whoami'], 'Failed to read Composio account status'))
-    return {
-      available: true,
-      authenticated: true,
-      cliVersion,
-      email: readNonEmptyString(payload?.email),
-      defaultOrgName: readNonEmptyString(payload?.default_org_name),
-      defaultOrgId: readNonEmptyString(payload?.default_org_id) || userData?.orgId || '',
-      webUrl: userData?.webUrl || 'https://dashboard.composio.dev/',
-      baseUrl: userData?.baseUrl || 'https://backend.composio.dev',
-      testUserId: readNonEmptyString(payload?.test_user_id) || userData?.testUserId || '',
-    }
-  } catch {
-    return {
-      available: true,
-      authenticated: false,
-      cliVersion,
-      email: '',
-      defaultOrgName: '',
-      defaultOrgId: userData?.orgId ?? '',
-      webUrl: userData?.webUrl || 'https://dashboard.composio.dev/',
-      baseUrl: userData?.baseUrl || 'https://backend.composio.dev',
-      testUserId: userData?.testUserId ?? '',
-    }
-  }
-}
-
-async function listComposioConnectors(query: string, cursor: string | null = null, limit = 50): Promise<ComposioConnectorPage> {
-  const args = ['dev', 'toolkits', 'list', '--limit', String(COMPOSIO_CONNECTORS_PAGE_LIMIT_MAX)]
-  const trimmedQuery = query.trim()
-  if (trimmedQuery) {
-    args.push('--query', trimmedQuery)
-  }
-  const [payload, connectionsBySlug] = await Promise.all([
-    runComposioJson<unknown[]>(args, 'Failed to list Composio toolkits'),
-    readComposioConnectionsBySlug(),
-  ])
-  const allRows = payload
-    .map((item) => normalizeComposioToolkit(item, connectionsBySlug))
-    .filter((row): row is ComposioConnectorSummary => row !== null)
-  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(COMPOSIO_CONNECTORS_PAGE_LIMIT_MAX, Math.floor(limit))) : 50
-  const safeCursor = parseComposioCursor(cursor, allRows.length)
-  return {
-    data: allRows.slice(safeCursor, safeCursor + safeLimit),
-    nextCursor: safeCursor + safeLimit < allRows.length ? String(safeCursor + safeLimit) : null,
-    total: allRows.length,
-  }
-}
-
-function parseComposioCursor(cursor: string | null | undefined, maxLength: number): number {
-  const trimmed = cursor?.trim() ?? ''
-  const parsed = Number.parseInt(trimmed, 10)
-  if (!Number.isFinite(parsed) || Number.isNaN(parsed) || parsed <= 0) return 0
-  if (parsed >= maxLength) return maxLength
-  return parsed
-}
-
-function parseComposioLimit(rawLimit: string | null): number {
-  const parsed = Number.parseInt((rawLimit ?? '').trim(), 10)
-  if (!Number.isFinite(parsed) || Number.isNaN(parsed) || parsed <= 0) return 50
-  return Math.max(1, Math.min(COMPOSIO_CONNECTORS_PAGE_LIMIT_MAX, parsed))
-}
-
-async function readComposioConnectorDetail(slug: string): Promise<ComposioConnectorDetail> {
-  const normalizedSlug = slug.trim()
-  if (!normalizedSlug) {
-    throw new Error('Missing Composio connector slug')
-  }
-
-  const [infoPayload, toolsPayload, connectionsPayload, userData] = await Promise.all([
-    runComposioJson<Record<string, unknown>>(['dev', 'toolkits', 'info', normalizedSlug], `Failed to load Composio toolkit ${normalizedSlug}`),
-    runComposioJson<unknown[]>(['tools', 'list', normalizedSlug, '--limit', '10'], `Failed to list tools for ${normalizedSlug}`),
-    runComposioJson<{ toolkit?: string; items?: unknown[] }>(['link', normalizedSlug, '--list'], `Failed to list connections for ${normalizedSlug}`),
-    readComposioUserData(),
-  ])
-
-  const connections = Array.isArray(connectionsPayload.items)
-    ? connectionsPayload.items.map(normalizeComposioConnection).filter((row): row is ComposioConnectionSummary => row !== null)
-    : []
-  const connector = normalizeComposioToolkit(infoPayload, new Map([[normalizedSlug, connections]]))
-  if (!connector) {
-    throw new Error(`Unknown Composio connector: ${normalizedSlug}`)
-  }
-
-  return {
-    connector,
-    connections,
-    tools: Array.isArray(toolsPayload)
-      ? toolsPayload.map(normalizeComposioTool).filter((row): row is ComposioToolSummary => row !== null)
-      : [],
-    dashboardUrl: userData?.webUrl || 'https://dashboard.composio.dev/',
-  }
-}
-
-async function startComposioLink(slug: string): Promise<ComposioLinkResult> {
-  const normalizedSlug = slug.trim()
-  if (!normalizedSlug) {
-    throw new Error('Missing Composio connector slug')
-  }
-  const payload = asRecord(await runComposioJson<Record<string, unknown>>(['link', normalizedSlug, '--no-wait'], `Failed to start Composio link for ${normalizedSlug}`))
-  return {
-    status: readNonEmptyString(payload?.status),
-    message: readNonEmptyString(payload?.message),
-    connectedAccountId: readNonEmptyString(payload?.connected_account_id),
-    redirectUrl: readNonEmptyString(payload?.redirect_url),
-    toolkit: readNonEmptyString(payload?.toolkit),
-    projectType: readNonEmptyString(payload?.project_type),
-  }
-}
-
-async function startComposioLogin(): Promise<ComposioLoginResult> {
-  const invocation = resolveComposioInvocation(['login', '--no-browser', '-y'])
-  if (!invocation) {
-    throw new Error('Composio CLI is not installed')
-  }
-  const proc = spawn(invocation.command, invocation.args, {
-    cwd: process.cwd(),
-    env: process.env,
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
-  proc.unref()
-
-  let stdout = ''
-  let stderr = ''
-  proc.stdout.setEncoding('utf8')
-  proc.stderr.setEncoding('utf8')
-  proc.stderr.on('data', (chunk) => { stderr += chunk })
-
-  const loginUrl = await new Promise<string>((resolveLoginUrl, reject) => {
-    const timeout = setTimeout(() => {
-      proc.kill('SIGTERM')
-      reject(new Error(stderr.trim() || stdout.trim() || 'Timed out waiting for Composio CLI login URL'))
-    }, 10_000)
-    const finish = (url: string) => {
-      clearTimeout(timeout)
-      proc.stdout.destroy()
-      proc.stderr.destroy()
-      resolveLoginUrl(url)
-    }
-    proc.once('error', (error) => {
-      clearTimeout(timeout)
-      reject(error)
-    })
-    proc.once('close', (code) => {
-      clearTimeout(timeout)
-      reject(new Error(stderr.trim() || stdout.trim() || `Composio CLI login exited with code ${code ?? 0}`))
-    })
-    proc.stdout.on('data', (chunk) => {
-      stdout += chunk
-      const url = stdout.match(/https?:\/\/\S+/)?.[0] ?? ''
-      if (url) finish(url)
-    })
-  })
-
-  const cliKey = loginUrl ? (new URL(loginUrl).searchParams.get('cliKey') ?? '') : ''
-  return {
-    status: 'started',
-    message: 'Composio CLI login URL created',
-    loginUrl,
-    cliKey,
-    expiresAt: '',
-  }
-}
-
-async function installComposioCli(): Promise<ComposioInstallResult> {
-  const command = 'bash'
-  const installScriptUrl = 'https://composio.dev/install'
-  const args = ['-lc', `curl -fsSL ${installScriptUrl} | bash`]
-  const invocation = getSpawnInvocation(command, args)
-  const env = {
-    ...process.env,
-    COMPOSIO_INSTALL_DIR: process.env.COMPOSIO_INSTALL_DIR?.trim() || join(homedir(), '.composio'),
-  }
-  const result = spawnSync(invocation.command, invocation.args, {
-    encoding: 'utf8',
-    env,
-    windowsHide: true,
-  })
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
-  if (result.error || result.status !== 0) {
-    throw new Error(output || result.error?.message || 'Failed to install Composio CLI')
-  }
-  return {
-    ok: true,
-    command: `curl -fsSL ${installScriptUrl} | bash`,
-    output,
-  }
 }
 
 function countRecoveredContentLines(value: string): number {
@@ -3993,16 +3528,6 @@ function mergeSessionCommandsIntoTurns(turns: unknown[], sessionLogRaw: string):
   })
 }
 
-function isExactPhraseMatch(query: string, doc: ThreadSearchDocument): boolean {
-  const q = query.trim().toLowerCase()
-  if (!q) return false
-  return (
-    doc.title.toLowerCase().includes(q) ||
-    doc.preview.toLowerCase().includes(q) ||
-    doc.messageText.toLowerCase().includes(q)
-  )
-}
-
 function scoreFileCandidate(path: string, query: string): number {
   if (!query) return 0
   const lowerPath = path.toLowerCase()
@@ -4558,136 +4083,10 @@ type CodexAuth = {
   }
 }
 
-const CODEX_CHATGPT_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-const DEFAULT_CODEX_REFRESH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
-
-function decodeBase64UrlJson(value: string): Record<string, unknown> | null {
-  try {
-    const padded = `${value}${'='.repeat((4 - (value.length % 4)) % 4)}`
-    const decoded = Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
-    const parsed = JSON.parse(decoded) as unknown
-    return asRecord(parsed)
-  } catch {
-    return null
-  }
-}
-
-function decodeJwtPayload(token: string | undefined): Record<string, unknown> | null {
-  if (!token) return null
-  const parts = token.split('.')
-  if (parts.length < 2) return null
-  return decodeBase64UrlJson(parts[1] ?? '')
-}
-
-function extractChatgptTokenMetadata(accessToken: string | undefined): {
-  chatgptAccountId: string | null
-  chatgptPlanType: string | null
-} {
-  const payload = decodeJwtPayload(accessToken)
-  const auth = asRecord(payload?.['https://api.openai.com/auth'])
-  return {
-    chatgptAccountId: readNonEmptyString(auth?.chatgpt_account_id) || null,
-    chatgptPlanType: readNonEmptyString(auth?.chatgpt_plan_type) || null,
-  }
-}
-
-function readTokenErrorMessage(payload: unknown, fallback: string): string {
-  const record = asRecord(payload)
-  const message = readNonEmptyString(record?.message)
-  if (message) return message
-  const error = record?.error
-  if (typeof error === 'string' && error.trim().length > 0) return error.trim()
-  const nestedError = asRecord(error)
-  return readNonEmptyString(nestedError?.message)
-    || readNonEmptyString(nestedError?.error_description)
-    || readNonEmptyString(record?.error_description)
-    || fallback
-}
-
-function readTokenResponseString(payload: Record<string, unknown> | null, ...keys: string[]): string | null {
-  if (!payload) return null
-  for (const key of keys) {
-    const value = readNonEmptyString(payload[key])
-    if (value) return value
-  }
-  return null
-}
-
 export async function refreshChatgptAuthTokensForExternalAuth(
   params: ChatgptAuthTokensRefreshParams = {},
 ): Promise<ChatgptAuthTokensRefreshResponse> {
-  const authPath = getCodexAuthPath()
-  const raw = await readFile(authPath, 'utf8')
-  const auth = JSON.parse(raw) as CodexAuth
-  const currentRefreshToken = auth.tokens?.refresh_token?.trim() ?? ''
-  if (!currentRefreshToken) {
-    throw new Error('No ChatGPT refresh token is available. Please sign in again.')
-  }
-
-  const refreshUrl = process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE?.trim() || DEFAULT_CODEX_REFRESH_TOKEN_URL
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: currentRefreshToken,
-    client_id: CODEX_CHATGPT_CLIENT_ID,
-  })
-
-  const response = await fetch(refreshUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: body.toString(),
-    signal: AbortSignal.timeout(25_000),
-  })
-
-  const text = await response.text()
-  let payload: Record<string, unknown> | null = null
-  try {
-    payload = asRecord(JSON.parse(text))
-  } catch {
-    payload = null
-  }
-
-  if (!response.ok) {
-    throw new Error(readTokenErrorMessage(payload, `ChatGPT token refresh failed with HTTP ${String(response.status)}`))
-  }
-
-  const accessToken = readTokenResponseString(payload, 'access_token', 'accessToken')
-  if (!accessToken) {
-    throw new Error('ChatGPT token refresh response did not include an access token.')
-  }
-
-  const nextRefreshToken = readTokenResponseString(payload, 'refresh_token', 'refreshToken') ?? currentRefreshToken
-  const nextIdToken = readTokenResponseString(payload, 'id_token', 'idToken') ?? auth.tokens?.id_token
-  const metadata = extractChatgptTokenMetadata(accessToken)
-  const chatgptAccountId =
-    metadata.chatgptAccountId
-    || readTokenResponseString(payload, 'chatgpt_account_id', 'chatgptAccountId')
-    || readNonEmptyString(params.previousAccountId)
-    || readNonEmptyString(auth.tokens?.account_id)
-  if (!chatgptAccountId) {
-    throw new Error('ChatGPT token refresh response did not include account metadata.')
-  }
-
-  const nextAuth: CodexAuth = {
-    ...auth,
-    auth_mode: auth.auth_mode || 'chatgpt',
-    last_refresh: Date.now(),
-    tokens: {
-      ...auth.tokens,
-      access_token: accessToken,
-      refresh_token: nextRefreshToken,
-      account_id: chatgptAccountId,
-      ...(nextIdToken ? { id_token: nextIdToken } : {}),
-    },
-  }
-  await writeFile(authPath, JSON.stringify(nextAuth, null, 2), { encoding: 'utf8', mode: 0o600 })
-
-  return {
-    accessToken,
-    chatgptAccountId,
-    chatgptPlanType: metadata.chatgptPlanType,
-  }
+  return await getAccountAuthCoordinator().refreshActiveTokens(params)
 }
 
 async function readCodexAuth(): Promise<{ accessToken: string; accountId?: string } | null> {
@@ -4894,199 +4293,6 @@ function getCodexAutomationsDir(): string {
   return join(getCodexHomeDir(), 'automations')
 }
 
-type ThreadAutomationStatus = 'ACTIVE' | 'PAUSED'
-
-type ThreadAutomationRecord = {
-  id: string
-  kind: 'heartbeat' | 'cron'
-  name: string
-  prompt: string
-  rrule: string
-  status: ThreadAutomationStatus
-  targetThreadId: string | null
-  cwds: string[]
-  extraTomlLines: string[]
-  createdAtMs: number | null
-  updatedAtMs: number | null
-  nextRunAtMs: number | null
-}
-
-function readTomlString(value: string): string {
-  const trimmed = value.trim()
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
-    try {
-      return JSON.parse(trimmed)
-    } catch {
-      return trimmed.slice(1, -1)
-    }
-  }
-  return trimmed
-}
-
-function serializeTomlString(value: string): string {
-  return JSON.stringify(value)
-}
-
-function parseTomlStringArray(value: string): string[] {
-  const trimmed = value.trim()
-  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return []
-  const values: string[] = []
-  let index = 1
-  const endIndex = trimmed.length - 1
-
-  while (index < endIndex) {
-    while (index < endIndex && /[\s,]/u.test(trimmed[index] ?? '')) index += 1
-    if (index >= endIndex) break
-
-    const quote = trimmed[index]
-    if (quote !== '"' && quote !== "'") return []
-    const start = index
-    index += 1
-    let valueText = ''
-
-    if (quote === "'") {
-      const closeIndex = trimmed.indexOf("'", index)
-      if (closeIndex < 0 || closeIndex > endIndex) return []
-      valueText = trimmed.slice(index, closeIndex)
-      index = closeIndex + 1
-    } else {
-      let escaped = false
-      while (index < endIndex) {
-        const char = trimmed[index] ?? ''
-        if (escaped) {
-          escaped = false
-        } else if (char === '\\') {
-          escaped = true
-        } else if (char === '"') {
-          break
-        }
-        index += 1
-      }
-      if (index >= endIndex || trimmed[index] !== '"') return []
-      try {
-        valueText = JSON.parse(trimmed.slice(start, index + 1)) as string
-      } catch {
-        return []
-      }
-      index += 1
-    }
-
-    if (valueText.trim().length > 0) values.push(valueText)
-    while (index < endIndex && /\s/u.test(trimmed[index] ?? '')) index += 1
-    if (index < endIndex && trimmed[index] !== ',') return []
-  }
-
-  return values
-}
-
-function serializeTomlStringArray(values: string[]): string {
-  return `[${values.map((value) => serializeTomlString(value)).join(', ')}]`
-}
-
-export function parseAutomationToml(raw: string): ThreadAutomationRecord | null {
-  const values: Record<string, string> = {}
-  const extraTomlLines: string[] = []
-  const knownKeys = new Set([
-    'version',
-    'id',
-    'kind',
-    'name',
-    'prompt',
-    'status',
-    'rrule',
-    'target_thread_id',
-    'cwds',
-    'created_at',
-    'updated_at',
-  ])
-  let isInsideExtraTable = false
-  for (const line of raw.split(/\r?\n/u)) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      isInsideExtraTable = true
-      extraTomlLines.push(trimmed)
-      continue
-    }
-    if (isInsideExtraTable) {
-      extraTomlLines.push(trimmed)
-      continue
-    }
-    if (!trimmed.includes('=')) {
-      extraTomlLines.push(trimmed)
-      continue
-    }
-    const separatorIndex = trimmed.indexOf('=')
-    const key = trimmed.slice(0, separatorIndex).trim()
-    const value = trimmed.slice(separatorIndex + 1).trim()
-    if (!key) continue
-    if (knownKeys.has(key)) {
-      values[key] = value
-    } else {
-      extraTomlLines.push(trimmed)
-    }
-  }
-
-  const id = readTomlString(values.id ?? '')
-  const kindValue = readTomlString(values.kind ?? (values.cwds ? 'cron' : 'heartbeat'))
-  const name = readTomlString(values.name ?? '')
-  const prompt = readTomlString(values.prompt ?? '')
-  const rrule = readTomlString(values.rrule ?? '')
-  const statusValue = readTomlString(values.status ?? 'ACTIVE')
-  const targetThreadId = readTomlString(values.target_thread_id ?? '') || null
-  const cwds = parseTomlStringArray(values.cwds ?? '')
-  const createdAtMs = Number.parseInt(values.created_at ?? '', 10)
-  const updatedAtMs = Number.parseInt(values.updated_at ?? '', 10)
-
-  if (!id || !name || !prompt || !rrule) return null
-  if (kindValue !== 'heartbeat' && kindValue !== 'cron') return null
-  if (statusValue !== 'ACTIVE' && statusValue !== 'PAUSED') return null
-
-  return {
-    id,
-    kind: kindValue,
-    name,
-    prompt,
-    rrule,
-    status: statusValue,
-    targetThreadId,
-    cwds,
-    extraTomlLines,
-    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
-    updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : null,
-    nextRunAtMs: null,
-  }
-}
-
-function serializeAutomationToml(record: ThreadAutomationRecord): string {
-  const lines = [
-    'version = 1',
-    `id = ${serializeTomlString(record.id)}`,
-    `kind = ${serializeTomlString(record.kind)}`,
-    `name = ${serializeTomlString(record.name)}`,
-    `prompt = ${serializeTomlString(record.prompt)}`,
-    `status = ${serializeTomlString(record.status)}`,
-    `rrule = ${serializeTomlString(record.rrule)}`,
-  ]
-  if (record.targetThreadId) {
-    lines.push(`target_thread_id = ${serializeTomlString(record.targetThreadId)}`)
-  }
-  if (record.cwds.length > 0) {
-    lines.push(`cwds = ${serializeTomlStringArray(record.cwds)}`)
-  }
-  lines.push(
-    `created_at = ${String(record.createdAtMs ?? Date.now())}`,
-    `updated_at = ${String(record.updatedAtMs ?? Date.now())}`,
-  )
-  lines.push(...record.extraTomlLines)
-  return `${lines.join('\n')}\n`
-}
-
-export function toAutomationApiRecord(record: ThreadAutomationRecord): Omit<ThreadAutomationRecord, 'extraTomlLines'> {
-  const { extraTomlLines: _extraTomlLines, ...apiRecord } = record
-  return apiRecord
-}
-
 function toAutomationApiMap(
   automationsByTarget: Record<string, ThreadAutomationRecord[]>,
 ): Record<string, Array<Omit<ThreadAutomationRecord, 'extraTomlLines'>>> {
@@ -5114,7 +4320,9 @@ function slugifyAutomationId(threadId: string, name: string): string {
 
 async function readAutomationRecordFromFile(filePath: string): Promise<ThreadAutomationRecord | null> {
   try {
-    return parseAutomationToml(await readFile(filePath, 'utf8'))
+    const record = parseAutomationToml(await readFile(filePath, 'utf8'))
+    const engine = (globalThis as any)[SHARED_BRIDGE_KEY]?.automationEngine as AutomationEngine | undefined
+    return record && engine ? engine.decorate(record) : record
   } catch {
     return null
   }
@@ -5177,6 +4385,12 @@ async function writeThreadHeartbeatAutomation(input: {
   prompt: string
   rrule: string
   status: ThreadAutomationStatus
+  model?: unknown
+  serviceTier?: unknown
+  accountStorageId?: unknown
+  protected?: unknown
+  reasoningEffort?: unknown
+  timezone?: string
 }): Promise<ThreadAutomationRecord> {
   const threadId = input.threadId.trim()
   const name = input.name.trim()
@@ -5195,6 +4409,8 @@ async function writeThreadHeartbeatAutomation(input: {
   const automationDir = join(automationRoot, id)
   const now = Date.now()
   const record: ThreadAutomationRecord = {
+    ...normalizeAutomationModelSettings(input, existing ?? {}),
+    timezone: input.timezone ?? existing?.timezone,
     id,
     kind: 'heartbeat',
     name,
@@ -5210,7 +4426,7 @@ async function writeThreadHeartbeatAutomation(input: {
   }
 
   await mkdir(automationDir, { recursive: true })
-  await writeFile(join(automationDir, 'automation.toml'), serializeAutomationToml(record), 'utf8')
+  await writeAutomationFileAtomic(join(automationDir, 'automation.toml'), serializeAutomationToml(record))
   const memoryPath = join(automationDir, 'memory.md')
   try {
     await stat(memoryPath)
@@ -5285,6 +4501,12 @@ async function writeProjectCronAutomation(input: {
   prompt: string
   rrule: string
   status: ThreadAutomationStatus
+  model?: unknown
+  serviceTier?: unknown
+  accountStorageId?: unknown
+  protected?: unknown
+  reasoningEffort?: unknown
+  timezone?: string
 }): Promise<ThreadAutomationRecord> {
   const projectName = input.projectName.trim()
   const name = input.name.trim()
@@ -5306,6 +4528,8 @@ async function writeProjectCronAutomation(input: {
   const automationDir = join(automationRoot, id)
   const now = Date.now()
   const record: ThreadAutomationRecord = {
+    ...normalizeAutomationModelSettings(input, existing ?? {}),
+    timezone: input.timezone ?? existing?.timezone,
     id,
     kind: 'cron',
     name,
@@ -5321,7 +4545,7 @@ async function writeProjectCronAutomation(input: {
   }
 
   await mkdir(automationDir, { recursive: true })
-  await writeFile(join(automationDir, 'automation.toml'), serializeAutomationToml(record), 'utf8')
+  await writeAutomationFileAtomic(join(automationDir, 'automation.toml'), serializeAutomationToml(record))
   const memoryPath = join(automationDir, 'memory.md')
   try {
     await stat(memoryPath)
@@ -5341,7 +4565,7 @@ async function deleteProjectCronAutomation(projectName: string, automationId = '
     const remainingCwds = automation.cwds.filter((cwd) => cwd !== normalizedProjectName)
     if (remainingCwds.length > 0) {
       const record = { ...automation, cwds: remainingCwds, updatedAtMs: Date.now() }
-      await writeFile(join(getCodexAutomationsDir(), automation.id, 'automation.toml'), serializeAutomationToml(record), 'utf8')
+      await writeAutomationFileAtomic(join(getCodexAutomationsDir(), automation.id, 'automation.toml'), serializeAutomationToml(record))
     } else {
       await rm(join(getCodexAutomationsDir(), automation.id), { recursive: true, force: true })
     }
@@ -5354,7 +4578,7 @@ async function deleteProjectCronAutomation(projectName: string, automationId = '
     const remainingCwds = automation.cwds.filter((cwd) => cwd !== normalizedProjectName)
     if (remainingCwds.length > 0) {
       const record = { ...automation, cwds: remainingCwds, updatedAtMs: Date.now() }
-      await writeFile(join(getCodexAutomationsDir(), automation.id, 'automation.toml'), serializeAutomationToml(record), 'utf8')
+      await writeAutomationFileAtomic(join(getCodexAutomationsDir(), automation.id, 'automation.toml'), serializeAutomationToml(record))
       return
     }
     await rm(join(getCodexAutomationsDir(), automation.id), { recursive: true, force: true })
@@ -5525,25 +4749,9 @@ async function writePinnedThreadIds(threadIds: string[]): Promise<void> {
 const FIRST_LAUNCH_PLUGINS_CARD_DISMISSED_KEY = 'first-launch-plugins-card-dismissed'
 const THREAD_QUEUE_STATE_KEY = 'thread-queue-state'
 
-type StoredQueuedMessage = {
-  id: string
-  text: string
-  imageUrls: string[]
-  skills: Array<{ name: string; path: string }>
-  fileAttachments: Array<{ label: string; path: string; fsPath: string }>
-  collaborationMode: 'default' | 'plan'
-}
-
-type ThreadQueueState = Record<string, StoredQueuedMessage[]>
-
 type BackendQueuedTurn = {
   threadId: string
   message: StoredQueuedMessage
-}
-
-type ThreadQueueStateUpdate<T> = {
-  nextState: ThreadQueueState
-  result: T
 }
 
 type ResolvedCollaborationModeSettings = {
@@ -5551,133 +4759,42 @@ type ResolvedCollaborationModeSettings = {
   reasoningEffort: ReasoningEffort | null
 }
 
-function normalizeStoredQueuedMessage(value: unknown): StoredQueuedMessage | null {
-  const record = asRecord(value)
-  if (!record) return null
-
-  const id = typeof record.id === 'string' ? record.id.trim() : ''
-  if (!id) return null
-
-  const normalizeNamedPathItems = (items: unknown): Array<{ name: string; path: string }> => {
-    if (!Array.isArray(items)) return []
-    return items.flatMap((item) => {
-      const itemRecord = asRecord(item)
-      if (!itemRecord) return []
-      const name = typeof itemRecord.name === 'string' ? itemRecord.name.trim() : ''
-      const path = typeof itemRecord.path === 'string' ? itemRecord.path.trim() : ''
-      return name && path ? [{ name, path }] : []
-    })
-  }
-
-  const normalizeFileAttachments = (items: unknown): Array<{ label: string; path: string; fsPath: string }> => {
-    if (!Array.isArray(items)) return []
-    return items.flatMap((item) => {
-      const itemRecord = asRecord(item)
-      if (!itemRecord) return []
-      const label = typeof itemRecord.label === 'string' ? itemRecord.label.trim() : ''
-      const path = typeof itemRecord.path === 'string' ? itemRecord.path.trim() : ''
-      const fsPath = typeof itemRecord.fsPath === 'string' ? itemRecord.fsPath.trim() : ''
-      return label && path && fsPath ? [{ label, path, fsPath }] : []
-    })
-  }
-
-  return {
-    id,
-    text: typeof record.text === 'string' ? record.text : '',
-    imageUrls: normalizeStringArray(record.imageUrls),
-    skills: normalizeNamedPathItems(record.skills),
-    fileAttachments: normalizeFileAttachments(record.fileAttachments),
-    collaborationMode: record.collaborationMode === 'plan' ? 'plan' : 'default',
-  }
-}
-
-function normalizeThreadQueueState(value: unknown): ThreadQueueState {
-  const record = asRecord(value)
-  if (!record) return {}
-
-  const state: ThreadQueueState = {}
-  for (const [threadId, rawMessages] of Object.entries(record)) {
-    const normalizedThreadId = threadId.trim()
-    if (!normalizedThreadId || !Array.isArray(rawMessages)) continue
-    const messages = rawMessages.flatMap((item) => {
-      const message = normalizeStoredQueuedMessage(item)
-      return message ? [message] : []
-    })
-    if (messages.length > 0) {
-      state[normalizedThreadId] = messages
-    }
-  }
-  return state
-}
-
-let threadQueueMutationChain: Promise<unknown> = Promise.resolve()
-
-async function readThreadQueueState(): Promise<ThreadQueueState> {
+async function readLegacyThreadQueueState(): Promise<ThreadQueueState> {
   const statePath = getCodexGlobalStatePath()
   try {
     const raw = await readFile(statePath, 'utf8')
     const payload = asRecord(JSON.parse(raw)) ?? {}
-    return normalizeThreadQueueState(payload[THREAD_QUEUE_STATE_KEY])
-  } catch {
-    return {}
+    const legacy = payload[THREAD_QUEUE_STATE_KEY]
+    if (legacy === undefined) return {}
+    const queues = asRecord(legacy)
+    if (!queues || Object.entries(queues).some(([id, rows]) => !id.trim() || !Array.isArray(rows) || rows.some(row => !normalizeStoredQueuedMessage(row)))) throw new Error('旧队列内容无效，已停止迁移')
+    return normalizeThreadQueueState(queues)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
   }
 }
 
-async function writeThreadQueueStateUnlocked(nextState: ThreadQueueState): Promise<void> {
-  const statePath = getCodexGlobalStatePath()
-  let payload: Record<string, unknown> = {}
-  try {
-    const raw = await readFile(statePath, 'utf8')
-    payload = asRecord(JSON.parse(raw)) ?? {}
-  } catch {
-    payload = {}
-  }
-  const normalized = normalizeThreadQueueState(nextState)
-  if (Object.keys(normalized).length > 0) {
-    payload[THREAD_QUEUE_STATE_KEY] = normalized
-  } else {
+async function clearLegacyThreadQueueState(): Promise<void> {
+  await queueWorkspaceRootsMutation(async () => {
+    const statePath = getCodexGlobalStatePath()
+    let payload: Record<string, unknown>
+    try {
+      const parsed = asRecord(JSON.parse(await readFile(statePath, 'utf8')))
+      if (!parsed) throw new Error('全局状态文件无效，已停止队列迁移')
+      payload = parsed
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    if (!(THREAD_QUEUE_STATE_KEY in payload)) return
     delete payload[THREAD_QUEUE_STATE_KEY]
-  }
-  await writeFile(statePath, JSON.stringify(payload), 'utf8')
-}
-
-async function withThreadQueueStateUpdate<T>(
-  update: (state: ThreadQueueState) => ThreadQueueStateUpdate<T> | Promise<ThreadQueueStateUpdate<T>>,
-): Promise<T> {
-  const run = threadQueueMutationChain.then(async () => {
-    const currentState = await readThreadQueueState()
-    const { nextState, result } = await update(currentState)
-    await writeThreadQueueStateUnlocked(nextState)
-    return result
+    await writeAutomationFileAtomic(statePath, JSON.stringify(payload))
   })
-  threadQueueMutationChain = run.catch(() => {})
-  return run
-}
-
-async function writeThreadQueueState(nextState: ThreadQueueState): Promise<void> {
-  await withThreadQueueStateUpdate(() => ({
-    nextState: normalizeThreadQueueState(nextState),
-    result: undefined,
-  }))
-}
-
-async function appendThreadQueuedMessage(threadId: string, message: StoredQueuedMessage): Promise<void> {
-  const normalizedThreadId = threadId.trim()
-  if (!normalizedThreadId) throw new Error('threadId is required')
-  await withThreadQueueStateUpdate((state) => ({
-    nextState: {
-      ...state,
-      [normalizedThreadId]: [...(state[normalizedThreadId] ?? []), message],
-    },
-    result: undefined,
-  }))
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | '' {
-  const allowed: ReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
-  return typeof value === 'string' && allowed.includes(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
-    : ''
+  return capabilityValue(value)
 }
 
 function normalizeCollaborationModeReasoningEffort(value: ReasoningEffort | '' | null | undefined): ReasoningEffort | null {
@@ -5703,30 +4820,6 @@ function buildTextWithAttachments(prompt: string, files: StoredQueuedMessage['fi
     prefix += `\n## ${f.label}: ${f.path}\n`
   }
   return `${prefix}\n## My request for Codex:\n\n${prompt}\n`
-}
-
-function escapeHeartbeatXmlText(value: string): string {
-  return value
-    .replace(/&/gu, '&amp;')
-    .replace(/</gu, '&lt;')
-    .replace(/>/gu, '&gt;')
-}
-
-function buildHeartbeatQueuedMessage(automation: ThreadAutomationRecord): StoredQueuedMessage {
-  return {
-    id: `automation-${automation.id}-${Date.now()}-${randomBytes(3).toString('hex')}`,
-    text: `<heartbeat>
-<automation_id>${escapeHeartbeatXmlText(automation.id)}</automation_id>
-<current_time_iso>${new Date().toISOString()}</current_time_iso>
-<instructions>
-${escapeHeartbeatXmlText(automation.prompt)}
-</instructions>
-</heartbeat>`,
-    imageUrls: [],
-    skills: [],
-    fileAttachments: [],
-    collaborationMode: 'default',
-  }
 }
 
 function fileNameFromPath(pathValue: string): string {
@@ -6370,23 +5463,268 @@ const MERGEABLE_ITEM_TYPES = new Set([
   'fileChange',
 ])
 
-class AppServerProcess {
+export class AppServerProcess {
+  notifyAccountQuota(account: import('./accountAuthStore.js').StoredAccountEntry): void {
+    this.emitNotification({ method: 'codexapp/accountQuota/updated', params: { account } })
+  }
+  private quotaReadFlight: { storageId: string | null; promise: Promise<{ payload: unknown; account: import('./accountAuthStore.js').StoredAccountEntry | null }> } | null = null
+  private quotaReadCache: { storageId: string | null; at: number; result: { payload: unknown; account: import('./accountAuthStore.js').StoredAccountEntry | null } } | null = null
+  private async readRuntimeQuota(storageId: string | null): Promise<{ payload: unknown; account: import('./accountAuthStore.js').StoredAccountEntry | null }> {
+    const coordinator = getAccountAuthCoordinator()
+    if (!this.runtimeOptions.isolatedTask && coordinator.blocksNewSubmissions()) throw new Error('账号正在切换，稍后读取额度')
+    if (this.quotaReadFlight?.storageId === storageId) return boundedQuotaRead(this.quotaReadFlight.promise)
+    if (this.quotaReadCache?.storageId === storageId && Date.now() - this.quotaReadCache.at < 2000) return this.quotaReadCache.result
+    const revision = storageId ? coordinator.quotaRevision(storageId) : 0
+    const promise = (async () => {
+      const payload = await coordinator.readQuotaWithBackoff(storageId || 'runtime', () => this.call('account/rateLimits/read', null))
+      const account = storageId ? await coordinator.applyRuntimeQuotaRead(storageId, payload, revision) : null
+      const result = { payload, account }
+      this.quotaReadCache = !storageId || revision === coordinator.quotaRevision(storageId) ? { storageId, at: Date.now(), result } : null
+      return result
+    })()
+    this.quotaReadFlight = { storageId, promise }
+    const clear = () => { if (this.quotaReadFlight?.promise === promise) this.quotaReadFlight = null }
+    void promise.then(clear, clear)
+    return boundedQuotaRead(promise)
+  }
+  quotaBlocked: (threadId: string, turnId: string) => Promise<void> = async () => {}
+  notifyQuotaResumeChanged(): void { this.emitNotification({ method: 'thread/quotaResume/changed', params: {} }) }
+  async observeAccountQuota(payload: unknown): Promise<void> {
+    this.quotaReadCache = null
+    const coordinator = getAccountAuthCoordinator()
+    const id = await this.runtimeAccountId()
+    if (id) await coordinator.observeRuntimeQuota(id, payload)
+  }
+  constructor(private readonly runtimeOptions: { isolatedTask?: boolean; requestIdOffset?: number } = {}) {
+    this.nextId = runtimeOptions.requestIdOffset || 1
+  }
+  private runtimeStorageId: string | null = null
+  private assignedStorageId: string | null = null
+  private sessionOperations = 0
+  private closingSession: Promise<void> | null = null
+  private executionLease: AccountExecutionLease | null = null
+  private taskLease: { runId: string; storageId: string | null; protected: boolean } | null = null
+  private readonly acquiringAccounts = new Set<string>()
+  // Native unsubscribe retains a writer for 30 minutes. A session therefore
+  // keeps one process across chat and automation; credentials change only at
+  // that session's boundary. Idle eviction closes the process and awaits exit.
+  private readonly sessionWorkers = new AccountResourcePool<AppServerProcess>({
+    capacity: 16,
+    idle: async worker => {
+      if (worker.currentTaskRun || worker.sessionOperations || worker.activeTurnThreadIds.size || worker.pendingServerRequests.size || worker.pending.size) return false
+      if (!worker.process) return true
+      const terminals = await threadsWithBackgroundTerminals((method, params) => worker.rpc(method, params))
+      return !terminals.length && !worker.currentTaskRun && !worker.sessionOperations && !worker.activeTurnThreadIds.size && !worker.pendingServerRequests.size && !worker.pending.size
+    },
+    dispose: worker => worker.closeSession(),
+  })
+  private readonly taskRuns = new Map<string, AppServerProcess>()
+  private readonly ownedThreadIds = new Set<string>()
+  private nextWorkerId = 1
+  private nextForwardedRequestId = -1
+  private readonly forwardedRequests = new Map<number, { worker: AppServerProcess; nativeId: number }>()
+  private currentTaskRun: string | null = null
+
+  private threadWorker(threadId: string): AppServerProcess | undefined {
+    if (!threadId) return undefined
+    return [...this.sessionWorkers.values()].find(worker => worker.ownedThreadIds.has(threadId)) || this.sessionWorkers.get(threadId)
+  }
+  private runtimeAccountId(): Promise<string | null> {
+    if (this.runtimeOptions.isolatedTask) return Promise.resolve(this.assignedStorageId)
+    if (this.runtimeStorageId) return Promise.resolve(this.runtimeStorageId)
+    return getAccountAuthCoordinator().store.readState().then(state => state.activeStorageId)
+  }
+  private async closeSession(): Promise<void> {
+    this.dispose()
+    await this.closingSession
+  }
+  private async sessionWorker(key: string): Promise<AppServerProcess | null> {
+    const owned = this.threadWorker(key)
+    if (owned) {
+      // Touch the pool so an asynchronous idle check cannot evict this use.
+      const entry = [...this.sessionWorkers].find(([, worker]) => worker === owned)!
+      return this.sessionWorkers.getOrCreate(entry[0], () => owned)
+    }
+    return this.sessionWorkers.getOrCreate(key, () => {
+      const worker = new AppServerProcess({ isolatedTask: true, requestIdOffset: this.nextWorkerId++ * 1_000_000 })
+      worker.queueStateReader = async () => ({})
+      worker.quotaBlocked = (threadId, turnId) => this.quotaBlocked(threadId, turnId)
+      worker.onNotification(notification => {
+        if (notification.method === 'account/rateLimits/updated') void worker.observeAccountQuota(notification.params).catch(() => undefined)
+        if (/^(account\/|codexapp\/runtime\/)/.test(notification.method)) return
+        this.activityRevision++
+        this.forwardTaskNotification(this.remapTaskRequest(worker, notification))
+      })
+      return worker
+    })
+  }
+  private async configureSession(storageId: string | null, kind: 'primary' | 'automation', ownerId: string): Promise<void> {
+    if (this.assignedStorageId !== storageId && (this.activeTurnThreadIds.size || this.pendingServerRequests.size)) {
+      throw Object.assign(new Error('此会话仍在执行，请等当前回合结束后更换账号。其他会话不受影响。'), { rpcRejected: true, submissionNotSent: true })
+    }
+    const coordinator = getAccountAuthCoordinator()
+    const changed = this.assignedStorageId !== storageId
+    const initialized = this.initialized
+    this.assignedStorageId = storageId
+    this.executionLease?.release()
+    this.executionLease = storageId ? coordinator.executions.register({ storageId, kind, ownerId, protected: this.taskLease?.protected, busy: !!this.currentTaskRun || !!this.activeTurnThreadIds.size, disconnect: () => this.dispose() }) : null
+    const lease = this.executionLease
+    try {
+      await this.ensureInitialized()
+      if (initialized && changed) {
+        if (storageId) {
+          const credential = await coordinator.getApiCredential(storageId)
+          await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: credential.accessToken, chatgptAccountId: credential.accountId })
+        } else {
+          await this.closeSession()
+          await this.ensureInitialized()
+        }
+        this.quotaReadCache = null
+      }
+      lease?.assertCurrent()
+    } catch (error) {
+      this.dispose()
+      throw error
+    }
+  }
+  stopTaskRouting(): void {
+    for (const worker of this.sessionWorkers.values()) worker.dispose()
+    this.sessionWorkers.clear()
+    this.taskRuns.clear()
+    this.forwardedRequests.clear()
+  }
+  taskAccountBusy(): boolean { return !!this.currentTaskRun }
+
+  async acquireTaskAccount(runId: string, settings: import('../automationOptions.js').AutomationModelSettings & { targetThreadId?: string | null }): Promise<boolean> {
+    if (this.taskRuns.has(runId)) return true
+    if (this.taskRuns.size + this.acquiringAccounts.size >= 4 || this.acquiringAccounts.has(runId)) return false
+    this.acquiringAccounts.add(runId)
+    let worker: AppServerProcess | null = null
+    try {
+      const coordinator = getAccountAuthCoordinator()
+      const state = await coordinator.store.readState()
+      const config = settings.accountStorageId ? null : asRecord(asRecord(await this.rpc('config/read', {}))?.config)
+      const followsOtherProvider = !settings.accountStorageId && !settings.protected && config?.model_provider && config.model_provider !== 'openai'
+      const storageId = followsOtherProvider ? null : resolveAccountSelection(state, settings).storageId
+      if (coordinator.blocksApiAccount(settings.accountStorageId || null)) return false
+      if (storageId) {
+        await coordinator.getApiCredential(storageId)
+        const account = await coordinator.refreshAccount(storageId)
+        const fresh = account.quotaUpdatedAtIso && Date.now() - Date.parse(account.quotaUpdatedAtIso) < 30000
+        const windows = [account.quotaSnapshot?.primary, account.quotaSnapshot?.secondary].filter(Boolean)
+        if (fresh && windows.some(window => window!.usedPercent >= 100)) return false
+        try { await coordinator.assertSubmissionAllowed(undefined, { storageId, protected: settings.protected }) }
+        catch { return false }
+      }
+      worker = await this.sessionWorker(settings.targetThreadId || `run:${runId}`)
+      if (!worker || worker.currentTaskRun || worker.sessionOperations || worker.activeTurnThreadIds.size || worker.pendingServerRequests.size) return false
+      worker.taskLease = { runId, storageId, protected: settings.protected === true }
+      worker.currentTaskRun = runId
+      this.taskRuns.set(runId, worker)
+      await worker.configureSession(storageId, 'automation', runId)
+      return true
+    } catch (error) {
+      this.releaseTaskAccount(runId)
+      throw error
+    } finally {
+      this.acquiringAccounts.delete(runId)
+    }
+  }
+  taskAccountStorageId(runId: string): string | null | undefined {
+    return this.taskRuns.get(runId)?.assignedStorageId
+  }
+  releaseTaskAccount(runId: string): void {
+    const worker = this.taskRuns.get(runId)
+    if (!worker) return
+    worker.currentTaskRun = null
+    worker.taskLease = null
+    worker.executionLease?.setBusy(!!worker.activeTurnThreadIds.size)
+    this.taskRuns.delete(runId)
+  }
+
+  async automationRpc(method: string, params: unknown, runId?: string): Promise<unknown> {
+    const worker = runId ? this.taskRuns.get(runId) : this.threadWorker(readNonEmptyString(asRecord(params)?.threadId))
+    if (!worker && runId) throw Object.assign(new Error('自动化账号连接已释放，本次操作未发送'), { rpcRejected: true, submissionNotSent: true })
+    if (!worker) return this.rpc(method, params)
+    const input = worker.taskLease?.storageId && ['thread/start', 'thread/resume'].includes(method)
+      ? { ...asRecord(params), modelProvider: 'openai' }
+      : params
+    return worker.rpc(method, input, worker.taskLease?.runId)
+  }
+  private remapTaskRequest(worker: AppServerProcess, notification: { method: string; params: unknown }): { method: string; params: unknown } {
+    const params = asRecord(notification.params)
+    const nativeId = params?.id
+    if (!['server/request', 'server/request/resolved'].includes(notification.method) || typeof nativeId !== 'number') return notification
+    let id = [...this.forwardedRequests].find(([, entry]) => entry.worker === worker && entry.nativeId === nativeId)?.[0]
+    if (notification.method === 'server/request' && id === undefined) {
+      id = this.nextForwardedRequestId--
+      this.forwardedRequests.set(id, { worker, nativeId })
+    }
+    if (id === undefined) return notification
+    if (notification.method === 'server/request/resolved') this.forwardedRequests.delete(id)
+    return { ...notification, params: { ...params, id } }
+  }
+  private forwardTaskNotification(notification: { method: string; params: unknown }): void {
+    this.recordStreamEvent(notification)
+    this.captureItemFromNotification(notification)
+    const id = this.extractThreadIdFromParams(notification.params)
+    if (id) this.invalidateLiveStateCache(id)
+    for (const listener of this.notificationListeners) listener(notification)
+  }
+
+  accountDisconnected: (storageId: string, primary: boolean, runIds: string[]) => void = () => {}
+  async disconnectAccount(storageId: string, wasActive = false): Promise<void> {
+    const affected = [...this.sessionWorkers].filter(([, worker]) => worker.assignedStorageId === storageId)
+    const runIds = [...this.taskRuns].filter(([, runtime]) => affected.some(([, worker]) => worker === runtime)).map(([id]) => id)
+    for (const [key, worker] of affected) {
+      worker.dispose()
+      this.sessionWorkers.delete(key)
+      for (const [id, request] of this.forwardedRequests) if (request.worker === worker) this.forwardedRequests.delete(id)
+    }
+    for (const id of runIds) this.taskRuns.delete(id)
+    await Promise.all(affected.map(([, worker]) => worker.closeSession()))
+    if (wasActive || this.runtimeStorageId === storageId) {
+      this.dispose()
+      this.runtimeStorageId = null
+    }
+    this.accountDisconnected(storageId, wasActive, runIds)
+    this.forwardTaskNotification({ method: 'codexapp/account/removed', params: { storageId } })
+  }
+
+  async reloadAccount(storageId: string): Promise<void> {
+    const credential = await getAccountAuthCoordinator().store.readCredential(storageId)
+    await this.ensureInitialized()
+    await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: credential.auth.tokens!.access_token, chatgptAccountId: credential.identity.accountId })
+    this.runtimeStorageId = storageId
+    this.executionLease?.release()
+    this.executionLease = getAccountAuthCoordinator().executions.register({ storageId, kind: 'primary', ownerId: 'primary', busy: this.activeTurnThreadIds.size > 0, disconnect: () => this.dispose() })
+    this.quotaReadCache = null
+    this.authRecovery.clear()
+  }
+
+  readonly authRecovery = new AuthRecoveryRegistry()
+  automationActivity: () => string[] = () => []
+  backgroundActivity: () => Promise<string[]> = async () => []
+  queueStateReader: () => Promise<ThreadQueueState> = readLegacyThreadQueueState
   private process: ChildProcessWithoutNullStreams | null = null
   private initialized = false
   private initializePromise: Promise<void> | null = null
   private readBuffer = ''
   private nextId = 1
   private stopping = false
-  private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
+  private readonly pending = new Map<number, { method: string; resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly notificationListeners = new Set<(value: { method: string; params: unknown }) => void>()
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
   private readonly streamEventsByThreadId = new Map<string, StreamEventFrame[]>()
   private readonly lastThreadReadSnapshotByThreadId = new Map<string, unknown>()
-  private readonly threadTurnPageReadCacheByThreadId = new Map<string, { result: unknown; expiresAt: number }>()
-  private readonly threadTurnPageReadPromiseByThreadId = new Map<string, Promise<unknown>>()
   private readonly capturedItemsByThreadId = new Map<string, Map<string, CapturedItem>>()
   private readonly liveStateCache = new Map<string, { data: unknown; turnCount: number; sessionSize: number }>()
   private chatgptAuthRefreshPromise: Promise<ChatgptAuthTokensRefreshResponse> | null = null
+  private readonly activeTurnThreadIds = new Set<string>()
+  private readonly activeTurnIds = new Map<string, string>()
+  private readonly terminalTurnIds = new Set<string>()
+  private readonly accountFailureInterrupts = new Set<string>()
+  private activityRevision = 0
   private activeConfigSignature = ''
 
 
@@ -6400,6 +5738,10 @@ class AppServerProcess {
 
   private buildAppServerConfig(): { args: string[]; env: Record<string, string> } {
     const args = buildAppServerArgs()
+    if (this.runtimeOptions.isolatedTask && this.assignedStorageId) {
+      args.push('-c', 'model_provider="openai"')
+      return { args, env: {} }
+    }
     let extraEnv: Record<string, string> = {}
     const serverPort = parseInt(process.env.CODEXUI_SERVER_PORT ?? '', 10) || undefined
     args.push(...getProviderCompatibilityConfigArgs(serverPort))
@@ -6484,6 +5826,7 @@ class AppServerProcess {
       this.initialized = false
       this.initializePromise = null
       this.readBuffer = ''
+      this.emitNotification({ method: 'codexapp/runtime/stopped', params: {} })
     })
   }
 
@@ -6503,14 +5846,14 @@ class AppServerProcess {
       return
     }
 
-    if (typeof message.id === 'number' && this.pending.has(message.id)) {
+    if (typeof message.id === 'number' && !message.method && this.pending.has(message.id)) {
       const pendingRequest = this.pending.get(message.id)
       this.pending.delete(message.id)
 
       if (!pendingRequest) return
 
       if (message.error) {
-        pendingRequest.reject(new Error(message.error.message))
+        pendingRequest.reject(Object.assign(new Error(message.error.message), { rpcRejected: true, data: (message.error as { data?: unknown }).data }))
       } else {
         pendingRequest.resolve(message.result)
       }
@@ -6531,13 +5874,65 @@ class AppServerProcess {
     }
   }
 
+  private completionList: ThreadCompletionList | null = null
+  get completions(): ThreadCompletionList {
+    return this.completionList ??= new ThreadCompletionList(join(getCodexHomeDir(), 'codexapp-thread-completions-v1.json'), (threadId, token) => {
+      for (const listener of this.notificationListeners) {
+        listener({ method: 'codexapp/completions/changed', params: { threadId, token } })
+      }
+    })
+  }
+
+  notifyQueueChanged(threadId: string): void {
+    this.activityRevision++
+    // Queue changes do not invalidate thread history or live item caches.
+    for (const listener of this.notificationListeners) {
+      listener({ method: 'codexapp/queue/changed', params: { threadId } })
+    }
+  }
+
   private emitNotification(notification: { method: string; params: unknown }): void {
+    if (/^(turn\/(started|completed|cancelled)|thread\/(started|status\/changed|goal\/updated)|server\/request(?:\/resolved)?|codexapp\/runtime\/stopped)$/.test(notification.method)) {
+      this.activityRevision++
+    }
+    this.authRecovery.observe(notification.method, notification.params)
+    if (notification.method === 'error') {
+      const payload = asRecord(notification.params)
+      const error = asRecord(payload?.error)
+      const detail = JSON.stringify([error?.message, error?.codexErrorInfo])
+      const threadId = this.extractThreadIdFromParams(notification.params)
+      const turnId = readNonEmptyString(payload?.turnId) || this.activeTurnIds.get(threadId)
+      if (threadId && turnId && /usage.?limit|quota|rate.?limit|429|额度|限额|token_revoked|invalid_grant|authentication|unauthorized|\b401\b/i.test(detail) && !this.accountFailureInterrupts.has(turnId)) {
+        this.accountFailureInterrupts.add(turnId)
+        if (/usage.?limit|quota|rate.?limit|429|额度|限额/i.test(detail)) void this.quotaBlocked(threadId, turnId).catch(() => undefined)
+        void this.call('turn/interrupt', { threadId, turnId }).catch(() => undefined)
+      }
+    }
+    const notificationThreadId = this.extractThreadIdFromParams(notification.params)
+    if (notificationThreadId && this.runtimeOptions.isolatedTask && notification.method === 'thread/started') this.ownedThreadIds.add(notificationThreadId)
+    if (notificationThreadId && notification.method === 'turn/started') {
+      this.executionLease?.setBusy(true)
+      this.activeTurnThreadIds.add(notificationThreadId)
+      const params = asRecord(notification.params)
+      const turnId = readNonEmptyString(asRecord(params?.turn)?.id) || readNonEmptyString(params?.turnId)
+      if (turnId) this.activeTurnIds.set(notificationThreadId, turnId)
+    }
+    if (notificationThreadId && (notification.method === 'turn/completed' || notification.method === 'turn/cancelled')) {
+      const finishedTurnId = readNonEmptyString(asRecord(asRecord(notification.params)?.turn)?.id) || this.activeTurnIds.get(notificationThreadId)
+      if (finishedTurnId) {
+        this.terminalTurnIds.add(finishedTurnId)
+        if (this.terminalTurnIds.size > 256) this.terminalTurnIds.delete(this.terminalTurnIds.values().next().value!)
+      }
+      if (finishedTurnId) this.accountFailureInterrupts.delete(finishedTurnId)
+      this.activeTurnThreadIds.delete(notificationThreadId)
+      this.activeTurnIds.delete(notificationThreadId)
+      this.executionLease?.setBusy(this.activeTurnThreadIds.size > 0)
+    }
     this.recordStreamEvent(notification)
     this.captureItemFromNotification(notification)
     const nThreadId = this.extractThreadIdFromParams(notification.params)
     if (nThreadId) {
       this.invalidateLiveStateCache(nThreadId)
-      this.threadTurnPageReadCacheByThreadId.delete(nThreadId)
     }
     for (const listener of this.notificationListeners) {
       listener(notification)
@@ -6592,37 +5987,10 @@ class AppServerProcess {
 
   storeThreadReadSnapshot(threadId: string, snapshot: unknown): void {
     this.lastThreadReadSnapshotByThreadId.set(threadId, snapshot)
-    this.threadTurnPageReadCacheByThreadId.delete(threadId)
   }
 
   getLastThreadReadSnapshot(threadId: string): unknown | null {
     return this.lastThreadReadSnapshotByThreadId.get(threadId) ?? null
-  }
-
-  async readThreadForTurnPage(threadId: string): Promise<unknown> {
-    const now = Date.now()
-    const cached = this.threadTurnPageReadCacheByThreadId.get(threadId)
-    if (cached && cached.expiresAt > now) return cached.result
-    if (cached) this.threadTurnPageReadCacheByThreadId.delete(threadId)
-
-    const pending = this.threadTurnPageReadPromiseByThreadId.get(threadId)
-    if (pending) return pending
-
-    const promise = this.rpc('thread/read', {
-      threadId,
-      includeTurns: true,
-    }).then((result) => {
-      this.threadTurnPageReadCacheByThreadId.set(threadId, {
-        result,
-        expiresAt: Date.now() + THREAD_TURN_PAGE_READ_CACHE_TTL_MS,
-      })
-      return result
-    }).finally(() => {
-      this.threadTurnPageReadPromiseByThreadId.delete(threadId)
-    })
-
-    this.threadTurnPageReadPromiseByThreadId.set(threadId, promise)
-    return promise
   }
 
   cacheLiveState(threadId: string, data: unknown, turnCount: number, sessionSize: number): void {
@@ -6763,6 +6131,11 @@ class AppServerProcess {
   }
 
   private async refreshChatgptAuthTokens(params: ChatgptAuthTokensRefreshParams): Promise<ChatgptAuthTokensRefreshResponse> {
+    const storageId = await this.runtimeAccountId()
+    if (storageId) {
+      const credential = await getAccountAuthCoordinator().refreshTokensForStorage(storageId, params)
+      return credential
+    }
     if (!this.chatgptAuthRefreshPromise) {
       this.chatgptAuthRefreshPromise = refreshChatgptAuthTokensForExternalAuth(params).finally(() => {
         this.chatgptAuthRefreshPromise = null
@@ -6774,11 +6147,14 @@ class AppServerProcess {
   private async handleChatgptAuthTokensRefreshRequest(requestId: number, params: unknown): Promise<void> {
     const requestParams = asRecord(params)
     const previousAccountId = readNonEmptyString(requestParams?.previousAccountId ?? requestParams?.previous_account_id)
+    const process = this.process
+    const storageId = await this.runtimeAccountId()
     try {
       const result = await this.refreshChatgptAuthTokens({
         reason: readNonEmptyString(requestParams?.reason) || undefined,
         previousAccountId: previousAccountId || undefined,
       })
+      if (this.process !== process || await this.runtimeAccountId() !== storageId) throw new Error('账号连接已变更，请重新核对认证')
       this.sendServerRequestReply(requestId, { result })
       this.emitNotification({
         method: 'server/request/resolved',
@@ -6824,7 +6200,7 @@ class AppServerProcess {
     const id = this.nextId++
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      this.pending.set(id, { method, resolve, reject })
 
       this.sendLine({
         jsonrpc: '2.0',
@@ -6836,6 +6212,7 @@ class AppServerProcess {
   }
 
   private async ensureInitialized(): Promise<void> {
+    if (this.closingSession) await this.closingSession
     if (this.initialized) return
     if (this.initializePromise) {
       await this.initializePromise
@@ -6850,12 +6227,36 @@ class AppServerProcess {
       capabilities: {
         experimentalApi: true,
       },
-    }).then(() => {
+    }).then(async () => {
       this.sendLine({
         jsonrpc: '2.0',
         method: 'initialized',
       })
+      if (this.runtimeOptions.isolatedTask && this.assignedStorageId) {
+        const credential = await getAccountAuthCoordinator().getApiCredential(this.assignedStorageId)
+        await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: credential.accessToken, chatgptAccountId: credential.accountId })
+      }
+      if (this.runtimeOptions.isolatedTask && this.assignedStorageId && !this.executionLease) {
+        this.executionLease = getAccountAuthCoordinator().executions.register({ storageId: this.assignedStorageId, kind: this.currentTaskRun ? 'automation' : 'primary', ownerId: this.currentTaskRun || [...this.ownedThreadIds][0] || 'session', busy: !!this.currentTaskRun, disconnect: () => this.dispose() })
+      }
+      if (!this.runtimeOptions.isolatedTask) {
+        const storageId = await this.runtimeAccountId()
+        if (storageId) {
+          this.runtimeStorageId = storageId
+          const credential = await getAccountAuthCoordinator().store.readCredential(storageId)
+          // All ChatGPT runtimes delegate token rotation to the same coordinator.
+          // Local token login does not wait for quota or a remote refresh.
+          await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: credential.auth.tokens!.access_token, chatgptAccountId: credential.identity.accountId })
+          this.executionLease?.release()
+          this.executionLease = getAccountAuthCoordinator().executions.register({ storageId, kind: 'primary', ownerId: 'primary', busy: false, disconnect: () => this.dispose() })
+        }
+      }
       this.initialized = true
+      void Promise.resolve().then(async () => {
+        const coordinator = getAccountAuthCoordinator()
+        const storageId = await this.runtimeAccountId()
+        if (storageId && this.initialized && this.process) await this.readRuntimeQuota(storageId)
+      }).catch(() => undefined)
     }).finally(() => {
       this.initializePromise = null
     })
@@ -6863,10 +6264,118 @@ class AppServerProcess {
     await this.initializePromise
   }
 
-  async rpc(method: string, params: unknown): Promise<unknown> {
+  async rpc(method: string, params: unknown, taskId?: string): Promise<unknown> {
+    const coordinator = getAccountAuthCoordinator()
+    const threadId = readNonEmptyString(asRecord(params)?.threadId)
+    const mutatingTurn = ['turn/start', 'turn/steer', 'thread/compact/start', 'thread/goal/set'].includes(method)
+    if (mutatingTurn && this.taskAccountBusy() && taskId !== this.taskLease?.runId) {
+      throw Object.assign(new Error('该会话正在执行自动化，请等待本次运行结束'), { rpcRejected: true, submissionNotSent: true })
+    }
+    if (!this.runtimeOptions.isolatedTask) {
+      coordinator.runtimeQuotaReader = async storageId => {
+        const candidates = [this, ...this.sessionWorkers.values()]
+        for (const candidate of candidates) {
+          if (candidate.initialized && await candidate.runtimeAccountId() === storageId) return (await candidate.readRuntimeQuota(storageId)).account
+        }
+        return null
+      }
+      coordinator.activeUsageAccounts = async () => {
+        const ids = await Promise.all([this, ...this.sessionWorkers.values()].filter(candidate => candidate.activeTurnThreadIds.size).map(candidate => candidate.runtimeAccountId()))
+        return [...new Set(ids.filter((id): id is string => !!id))]
+      }
+      coordinator.setProtectionInterrupt(async storageId => {
+        for (const candidate of [this, ...this.sessionWorkers.values()]) {
+          if (await candidate.runtimeAccountId() !== storageId || candidate.taskLease?.protected || !candidate.activeTurnThreadIds.size) continue
+          const config = asRecord(asRecord(await candidate.call('config/read', {}))?.config)
+          if (config?.model_provider && config.model_provider !== 'openai') continue
+          for (const [id, turnId] of candidate.activeTurnIds) {
+            if (candidate === this) void this.quotaBlocked(id, turnId).catch(() => undefined)
+            await candidate.call('turn/interrupt', { threadId: id, turnId }).catch(() => undefined)
+          }
+        }
+      })
+    }
+    if (!this.runtimeOptions.isolatedTask) {
+      if (method === 'thread/loaded/list') {
+        const ids = new Set<string>()
+        for (const worker of this.sessionWorkers.values()) {
+          if (!worker.process) continue
+          const loaded = asRecord(await worker.rpc(method, params))
+          for (const id of Array.isArray(loaded?.data) ? loaded.data : []) if (typeof id === 'string') ids.add(id)
+        }
+        return { data: [...ids], nextCursor: null }
+      }
+      const owner = this.threadWorker(threadId)
+      if (owner || (mutatingTurn && threadId) || ['thread/start', 'thread/resume', 'thread/fork'].includes(method)) {
+        const worker = await this.sessionWorker(method === 'thread/start' || method === 'thread/fork' ? `chat:${randomUUID()}` : threadId)
+        if (!worker) throw Object.assign(new Error('会话运行资源已满，请先结束一个活动会话后重试'), { rpcRejected: true, submissionNotSent: true })
+        const selectsAccount = mutatingTurn || ['thread/start', 'thread/resume', 'thread/fork'].includes(method)
+        if (selectsAccount) worker.sessionOperations++
+        try {
+          if (!worker.currentTaskRun && selectsAccount) {
+            const state = await coordinator.store.readState()
+            const config = asRecord(asRecord(await this.rpc('config/read', {}))?.config)
+            const storageId = config?.model_provider && config.model_provider !== 'openai' ? null : state.activeStorageId
+            await worker.configureSession(storageId, 'primary', threadId || 'new-thread')
+          }
+          const input = worker.currentTaskRun && method === 'thread/resume'
+            ? { threadId, excludeTurns: asRecord(params)?.excludeTurns === true }
+            : params
+          return await worker.rpc(method, input, taskId)
+        } finally {
+          if (selectsAccount) worker.sessionOperations--
+        }
+      }
+    }
     this.disposeIfConfigChanged()
     await this.ensureInitialized()
-    return this.call(method, params)
+    if (method === 'account/rateLimits/read') {
+      const storageId = await this.runtimeAccountId()
+      return (await this.readRuntimeQuota(storageId)).payload
+    }
+    if (mutatingTurn) {
+      await getAccountAuthCoordinator().assertSubmissionAllowed(async () => {
+        const result = asRecord(await this.call('config/read', {}))
+        const config = asRecord(result?.config)
+        return !config?.model_provider || config.model_provider === 'openai'
+      }, this.runtimeOptions.isolatedTask ? { storageId: this.assignedStorageId || undefined, protected: !!taskId && this.taskLease?.protected === true } : undefined).catch(error => {
+        throw Object.assign(error instanceof Error ? error : new Error('额度校验失败'), { rpcRejected: true, submissionNotSent: true })
+      })
+    }
+    if (this.runtimeOptions.isolatedTask && mutatingTurn && threadId && !this.ownedThreadIds.has(threadId)) {
+      await this.call('thread/resume', { threadId, excludeTurns: true })
+      this.ownedThreadIds.add(threadId)
+    }
+    const result = await this.call(method, params)
+    if (method === 'turn/start' && threadId) {
+      const turn = asRecord(asRecord(result)?.turn)
+      const turnId = readNonEmptyString(turn?.id)
+      if (turnId && !this.terminalTurnIds.has(turnId) && !['completed', 'failed', 'interrupted'].includes(String(turn?.status))) {
+        this.activeTurnThreadIds.add(threadId)
+        this.activeTurnIds.set(threadId, turnId)
+        this.executionLease?.setBusy(true)
+      }
+    }
+    if (!this.runtimeOptions.isolatedTask && method === 'thread/list') {
+      const response = asRecord(result)
+      if (Array.isArray(response?.data)) {
+        return { ...response, data: response.data.map(value => {
+          const thread = asRecord(value)
+          const id = readNonEmptyString(thread?.id)
+          const owner = this.threadWorker(id)
+          if (!owner?.process || !owner.ownedThreadIds.has(id)) return value
+          // The catalog process sees other processes' threads as notLoaded.
+          // Surface the actual owner so UI and deployment checks see live work.
+          return { ...thread, status: owner.activeTurnThreadIds.has(id) ? { type: 'active', activeFlags: [] } : { type: 'idle' } }
+        }) }
+      }
+    }
+    if (['thread/start', 'thread/resume', 'thread/fork'].includes(method)) {
+      const id = readNonEmptyString(asRecord(asRecord(result)?.thread)?.id) || threadId
+      if (id) this.ownedThreadIds.add(id)
+    }
+    if (method === 'thread/archive' || (method === 'thread/unsubscribe' && asRecord(result)?.status === 'notLoaded')) this.ownedThreadIds.delete(threadId)
+    return result
   }
 
   onNotification(listener: (value: { method: string; params: unknown }) => void): () => void {
@@ -6877,8 +6386,6 @@ class AppServerProcess {
   }
 
   async respondToServerRequest(payload: unknown): Promise<void> {
-    await this.ensureInitialized()
-
     const body = asRecord(payload)
     if (!body) {
       throw new Error('Invalid response payload: expected object')
@@ -6888,6 +6395,10 @@ class AppServerProcess {
     if (typeof id !== 'number' || !Number.isInteger(id)) {
       throw new Error('Invalid response payload: "id" must be an integer')
     }
+
+    const forwarded = this.forwardedRequests.get(id)
+    if (forwarded) return forwarded.worker.respondToServerRequest({ ...body, id: forwarded.nativeId })
+    await this.ensureInitialized()
 
     const rawError = asRecord(body.error)
     if (rawError) {
@@ -6909,13 +6420,130 @@ class AppServerProcess {
   }
 
   listPendingServerRequests(): PendingServerRequest[] {
-    return Array.from(this.pendingServerRequests.values())
+    const taskRequests = [...this.forwardedRequests].flatMap(([id, request]) => {
+      const native = request.worker.pendingServerRequests.get(request.nativeId)
+      return native ? [{ ...native, id }] : []
+    })
+    return [...this.pendingServerRequests.values(), ...taskRequests]
+  }
+
+  liveActivity(): { activeTurnThreadIds: string[]; pendingOperationCount: number } {
+    const runtimes = [this, ...this.sessionWorkers.values()]
+    return {
+      activeTurnThreadIds: [...new Set(runtimes.flatMap(runtime => [...runtime.activeTurnThreadIds]))],
+      pendingOperationCount: runtimes.reduce((count, runtime) => count + runtime.sessionOperations + [...runtime.pending.values()].filter(request => /^(?:turn\/(?:start|steer|interrupt)|thread\/(?:start|resume|fork|compact\/start|goal\/set|settings\/update))$/.test(request.method)).length, 0),
+    }
+  }
+
+  async getAccountSwitchSnapshot(): Promise<RuntimeQuiescenceSnapshot> {
+    return this.getRuntimeQuiescenceSnapshot(false, true)
+  }
+
+  async getRuntimeQuiescenceSnapshot(ignoreTaskAcquisition = false, accountSwitch = false): Promise<RuntimeQuiescenceSnapshot> {
+    const activityRevision = this.activityRevision
+    const runtimes = [this, ...this.sessionWorkers.values()].filter(worker => !accountSwitch || !worker.currentTaskRun)
+    const activeTurnThreadIds = new Set(runtimes.flatMap(worker => [...worker.activeTurnThreadIds]))
+    if (accountSwitch) {
+      // Account switching depends on live session owners, not the number of
+      // historical threads or archived/incomplete records in the catalog.
+      for (const runtime of runtimes) {
+        for (const threadId of [...runtime.activeTurnThreadIds]) {
+          const response = asRecord(await runtime.rpc('thread/read', { threadId, includeTurns: false }))
+          const thread = asRecord(response?.thread)
+          const status = readNonEmptyString(asRecord(thread?.status)?.type) || readNonEmptyString(thread?.status)
+          if (['idle', 'notLoaded', 'systemError', 'completed', 'interrupted', 'failed'].includes(status)) {
+            runtime.activeTurnThreadIds.delete(threadId)
+            runtime.activeTurnIds.delete(threadId)
+            activeTurnThreadIds.delete(threadId)
+          }
+        }
+      }
+    } else {
+      let cursor: string | null = null
+      let pageCount = 0
+      const cursors = new Set<string>()
+      do {
+        const response = asRecord(await this.rpc('thread/list', {
+          archived: false,
+          limit: 100,
+          sortKey: 'updated_at',
+          modelProviders: [],
+          cursor,
+        }))
+        if (!Array.isArray(response?.data)) throw new Error('无法核对当前会话状态，请稍后重试')
+        const threads = response.data
+        for (const value of threads) {
+          const thread = asRecord(value)
+          const threadId = readNonEmptyString(thread?.id)
+          const status = asRecord(thread?.status)
+          const owner = this.threadWorker(threadId)
+          const statusType = owner?.activeTurnThreadIds.has(threadId) ? 'active' : readNonEmptyString(status?.type) || readNonEmptyString(thread?.status)
+          if (!threadId || !['idle', 'notLoaded', 'systemError', 'completed', 'interrupted', 'failed', 'inProgress', 'running', 'active'].includes(statusType)) {
+            throw new Error('会话运行状态未知，暂不能切换账号')
+          }
+          if (accountSwitch && owner?.currentTaskRun) continue
+          if (threadId && !['active', 'running', 'inProgress'].includes(statusType)) {
+            activeTurnThreadIds.delete(threadId)
+          }
+          if (threadId && (statusType === 'inProgress' || statusType === 'running' || statusType === 'active')) {
+            activeTurnThreadIds.add(threadId)
+          }
+        }
+        cursor = readNonEmptyString(response?.nextCursor) || null
+        if (cursor && cursors.has(cursor)) throw new Error('会话分页未前进，暂不能切换账号')
+        if (cursor) cursors.add(cursor)
+        pageCount += 1
+      } while (cursor && pageCount < 10)
+      if (cursor) activeTurnThreadIds.add('__thread_inventory_truncated__')
+    }
+
+    const queuedState = await this.queueStateReader()
+    const queuedThreadIds = Object.entries(queuedState)
+      .filter(([, messages]) => messages.some(message => !accountSwitch || ['sending', 'unknown'].includes(message.delivery?.status || 'queued')))
+      .map(([threadId]) => threadId)
+    const pendingTurnMutationCount = runtimes.flatMap(worker => [...worker.pending.values()]).filter((request) => (
+      request.method === 'turn/start'
+      || request.method === 'turn/interrupt'
+      || request.method === 'turn/steer'
+      || request.method === 'thread/resume'
+      || request.method === 'thread/compact/start'
+      || request.method === 'thread/goal/set'
+      || request.method === 'thread/settings/update'
+      || request.method === 'thread/backgroundTerminals/terminate'
+    )).length + runtimes.reduce((count, worker) => count + worker.sessionOperations, 0)
+    const pendingServerRequestCount = runtimes.reduce((count, worker) => count + worker.pendingServerRequests.size, 0)
+    const automationRunIds = accountSwitch ? [] : this.automationActivity()
+    if (!ignoreTaskAcquisition && this.taskAccountBusy()) automationRunIds.push('__account_task_lease__')
+    const backgroundThreadIds = accountSwitch || activeTurnThreadIds.size || queuedThreadIds.length || automationRunIds.length
+      || pendingServerRequestCount || pendingTurnMutationCount ? [] : await this.backgroundActivity()
+    if (activityRevision !== this.activityRevision) throw new Error('核对期间运行状态已变化，请稍后重试')
+    for (const id of this.activeTurnThreadIds) if (!activeTurnThreadIds.has(id)) { this.activeTurnThreadIds.delete(id); this.activeTurnIds.delete(id) }
+    return {
+      idle: automationRunIds.length === 0 && activeTurnThreadIds.size === 0
+        && backgroundThreadIds.length === 0
+        && queuedThreadIds.length === 0
+        && pendingServerRequestCount === 0
+        && pendingTurnMutationCount === 0,
+      activeTurnThreadIds: Array.from(activeTurnThreadIds),
+      queuedThreadIds,
+      automationRunIds,
+      backgroundThreadIds,
+      pendingServerRequestCount,
+      pendingTurnMutationCount,
+    }
   }
 
   dispose(): void {
+    this.ownedThreadIds.clear()
+    this.executionLease?.release()
+    this.executionLease = null
+    this.quotaReadCache = null
     if (!this.process) return
 
     const proc = this.process
+    const closing = proc.exitCode === null && proc.signalCode === null ? once(proc, 'exit').then(() => undefined).catch(() => undefined) : Promise.resolve()
+    this.closingSession = closing
+    void closing.then(() => { if (this.closingSession === closing) this.closingSession = null })
     this.stopping = true
     this.process = null
     this.initialized = false
@@ -6923,12 +6551,19 @@ class AppServerProcess {
     this.activeConfigSignature = ''
     this.readBuffer = ''
 
+    this.runtimeStorageId = null
     const failure = new Error('codex app-server stopped')
     for (const request of this.pending.values()) {
       request.reject(failure)
     }
     this.pending.clear()
     this.pendingServerRequests.clear()
+    this.activeTurnThreadIds.clear()
+    this.activeTurnIds.clear()
+    this.terminalTurnIds.clear()
+    this.accountFailureInterrupts.clear()
+    this.authRecovery.clear()
+    this.emitNotification({ method: 'codexapp/runtime/stopped', params: {} })
 
     try {
       proc.stdin.end()
@@ -6943,7 +6578,7 @@ class AppServerProcess {
     }
 
     const forceKillTimer = setTimeout(() => {
-      if (!proc.killed) {
+      if (proc.exitCode === null && proc.signalCode === null) {
         try {
           proc.kill('SIGKILL')
         } catch {
@@ -6956,44 +6591,210 @@ class AppServerProcess {
 }
 
 export class BackendQueueProcessor {
+  readonly store: DeliveryStore
+  readonly deliveries: DeliveryService
+  readonly history: ThreadHistory
   private readonly processingThreadIds = new Set<string>()
   private readonly queueDrainTimersByThreadId = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly queueDrainDueAtByThreadId = new Map<string, number>()
+  private readonly recoveryChecks = new Map<string, number>()
+  private readonly threadsNeedingResume = new Set<string>()
   private readonly unsubscribe: () => void
+  private pruneTimer: ReturnType<typeof setInterval> | null = null
+  private disposed = false
+  private disposal: Promise<void> | null = null
+  private providerChanging = false
 
-  constructor(private readonly appServer: AppServerProcess) {
-    this.unsubscribe = appServer.onNotification((notification) => {
-      if (!isTurnCompletedNotification(notification)) return
-      const threadId = extractThreadIdFromNotificationParams(notification.params)
-      if (!threadId) return
-      void this.processThreadQueue(threadId)
+  constructor(private readonly appServer: AppServerProcess, options: {
+    startRecovery?: boolean
+    directory?: string
+    features?: ConstructorParameters<typeof ThreadHistory>[1]
+    context?: () => Promise<string>
+    previousRuntimeStopped?: Promise<void>
+  } = {}) {
+    this.store = new DeliveryStore(options.directory ?? join(getCodexHomeDir(), 'codexapp-delivery'), {
+      ...(options.directory ? {} : { readLegacy: readLegacyThreadQueueState, clearLegacy: clearLegacyThreadQueueState }),
+      previousRuntimeStopped: options.previousRuntimeStopped,
     })
-    void this.scheduleAllQueuedThreads(1000)
+    const catalog = new MethodCatalog()
+    this.history = new ThreadHistory(
+      (method, params) => callRpcWithArchiveRecovery(appServer, method, params),
+      options.features ?? (async () => (await catalog.snapshot()).features),
+    )
+    this.deliveries = new DeliveryService(this.store, {
+      accountBusy: () => this.providerChanging || this.appServer.taskAccountBusy() || getAccountAuthCoordinator().blocksNewSubmissions(),
+      submissionBlocked: () => this.providerChanging || getAccountAuthCoordinator().blocksNewSubmissions(),
+      context: options.context ?? (() => this.deliveryContext()),
+      canStart: threadId => this.canStartQueuedTurn(threadId),
+      prepare: async row => {
+        if (row.mode === 'steer') await this.readThreadStatus(row.threadId)
+        const needsResume = this.threadsNeedingResume.delete(row.threadId)
+        if (needsResume) await appServer.rpc('thread/resume', { threadId: row.threadId, excludeTurns: true })
+        return row.params ?? this.buildQueuedTurnParams(row)
+      },
+      start: async params => {
+        const response = asRecord(await appServer.rpc('turn/start', params))
+        const turnId = readNonEmptyString(asRecord(response?.turn)?.id)
+        if (!turnId) throw new Error('未收到回合 ID，请核对发送状态')
+        return { turnId }
+      },
+      inspect: row => inspectDelivery(this.history, row),
+      changed: threadId => appServer.notifyQueueChanged(threadId),
+    })
+    appServer.queueStateReader = () => this.readState()
+    this.unsubscribe = appServer.onNotification(notification => {
+      const threadId = extractThreadIdFromNotificationParams(notification.params)
+      if (threadId) this.history.invalidate(threadId)
+      void this.deliveries.observe(notification).catch(() => {})
+      if (threadId && isTurnCompletedNotification(notification)) this.scheduleThreadQueueDrain(threadId, 0)
+    })
+    if (options.startRecovery !== false) {
+      void this.scheduleAllQueuedThreads(1000)
+      this.pruneTimer = setInterval(() => { void this.store.pruneReceipts().catch(() => {}) }, 3600000)
+      this.pruneTimer.unref?.()
+    }
   }
 
-  dispose(): void {
-    this.unsubscribe()
-    for (const timer of this.queueDrainTimersByThreadId.values()) {
-      clearTimeout(timer)
+  async cancelAccountDeliveries(): Promise<void> {
+    for (const row of await this.store.records()) {
+      if (row.status === 'sending') await this.store.unknown(row.message.id, '账号已移除，已切断执行连接；请核对会话历史')
+      else if (row.status === 'queued') await this.store.failed(row.message.id, row.revision, '账号已移除；请登录后手动重新发送')
+      this.appServer.notifyQueueChanged(row.threadId)
     }
+  }
+
+  async deliveryContext(): Promise<string> {
+    const [account, auth, response] = await Promise.all([
+      getAccountAuthCoordinator().store.readState(),
+      readCodexAuth(),
+      this.appServer.rpc('config/read', {}),
+    ])
+    const config = asRecord(asRecord(response)?.config)
+    const provider = readNonEmptyString(config?.model_provider) || 'openai'
+    const settings = asRecord(asRecord(config?.model_providers)?.[provider])
+    // Persist only the identity digest, never the credential or unrelated model settings.
+    return createHash('sha256').update(JSON.stringify({
+      account: account.activeStorageId ?? auth?.accountId ?? null,
+      provider, baseUrl: settings?.base_url ?? null, wireApi: settings?.wire_api ?? null,
+    })).digest('hex')
+  }
+
+  beginProviderChange(): () => void {
+    if (this.providerChanging || getAccountAuthCoordinator().isAccountOperationInProgress()) throw new Error('账号或供应方正在切换，请稍后重试')
+    this.providerChanging = true
+    return () => { this.providerChanging = false }
+  }
+
+  isIdentityChanging(): boolean {
+    return this.providerChanging || getAccountAuthCoordinator().blocksNewSubmissions()
+  }
+
+  async readState(): Promise<ThreadQueueState> {
+    const state: ThreadQueueState = {}
+    const records = await this.store.records()
+    const pendingIds = new Set(records.map(row => row.message.id))
+    for (const id of this.recoveryChecks.keys()) {
+      if (!pendingIds.has(id)) this.recoveryChecks.delete(id)
+    }
+    for (const row of records) {
+      (state[row.threadId] ??= []).push({ ...row.message, delivery: deliveryView(row) })
+    }
+    return state
+  }
+
+  async submit(input: unknown): Promise<Record<string, unknown>> {
+    const body = asRecord(input)
+    if (body?.protocol !== 2) throw new Error('发送接口已更新，请刷新页面后重试')
+    const threadId = readNonEmptyString(body.threadId)
+    const message = normalizeStoredQueuedMessage(body.message)
+    const params = asRecord(body.params)
+    const expectedContextId = readNonEmptyString(body.expectedContextId)
+    if (!threadId || !message || !params || !expectedContextId || params.threadId !== threadId || !Array.isArray(params.input)) throw new Error('无效的发送内容或缺少账号快照，请刷新页面')
+    const result = await this.deliveries.submit({
+      threadId, message, params, expectedContextId,
+      mode: body.mode === 'steer' ? 'steer' : 'immediate',
+    })
+    this.scheduleThreadQueueDrain(threadId, 1000)
+    if (!result) throw new Error('找不到发送记录，请核对状态')
+    return 'message' in result
+      ? { id: result.message.id, ...deliveryView(result) }
+      : { id: result.id, status: result.status, turnId: result.turnId }
+  }
+
+  async mutate(input: unknown): Promise<{ state: ThreadQueueState; removed?: StoredQueuedMessage; delivered?: { id: string; turnId: string } }> {
+    const body = asRecord(input)
+    if (body?.protocol !== 2) throw new Error('队列接口已更新，请刷新页面后重试；队列未修改')
+    const threadId = readNonEmptyString(body.threadId)
+    if (!threadId) throw new Error('缺少会话 ID')
+    let removed: StoredQueuedMessage | undefined
+    if (body.type === 'add') {
+      const message = normalizeStoredQueuedMessage(body.message)
+      const expectedContextId = readNonEmptyString(body.expectedContextId)
+      if (!message || !expectedContextId) throw new Error('无效的排队消息或缺少账号快照，请刷新页面')
+      await this.deliveries.submit({ threadId, message, mode: 'queue', expectedContextId }, readNonEmptyString(body.beforeId) || undefined)
+    } else {
+      const id = readNonEmptyString(body.messageId)
+      const row = await this.deliveries.result(id)
+      if (!row || row.threadId !== threadId) throw new Error('该消息状态已变化，请刷新队列')
+      if (!('message' in row)) {
+        if (!['reconcile', 'steer'].includes(String(body.type))) throw new Error('该消息已发送或已移除，请刷新队列')
+      } else if (body.type === 'reconcile') {
+        await this.deliveries.reconcile(id)
+      } else {
+        const revision = Number(body.revision)
+        if (!Number.isInteger(revision) || revision < 1) throw new Error('缺少消息版本，请刷新队列')
+        if (body.type === 'remove' || body.type === 'abandon') {
+          removed = await this.store.remove(id, revision, body.type === 'abandon')
+        } else if (body.type === 'move') {
+          await this.store.move(id, revision, readNonEmptyString(body.targetId))
+        } else if (body.type === 'edit' || body.type === 'update') {
+          const contents = body.type === 'update' ? normalizeStoredQueuedMessage({ ...asRecord(body.message), id }) : undefined
+          if (body.type === 'update' && !contents) throw new Error('无效的编辑内容')
+          // Queue editing keeps the original execution settings and position.
+          await this.store.edit(id, revision, readNonEmptyString(body.editToken), contents ? {
+            text: contents.text, imageUrls: contents.imageUrls, skills: contents.skills, fileAttachments: contents.fileAttachments,
+          } : undefined)
+        } else if (body.type === 'resume') {
+          await this.store.resume(id, revision)
+        } else if (body.type === 'steer') {
+          await this.deliveries.steer(id, revision)
+        } else {
+          throw new Error('无效的队列操作')
+        }
+      }
+    }
+    this.appServer.notifyQueueChanged(threadId)
+    this.scheduleThreadQueueDrain(threadId, 0)
+    const receipt = body.messageId ? await this.store.readReceipt(String(body.messageId)) : null
+    return { state: await this.readState(), ...(removed ? { removed } : {}),
+      ...(receipt?.turnId ? { delivered: { id: receipt.id, turnId: receipt.turnId } } : {}) }
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
+    this.disposed = true
+    this.unsubscribe()
+    if (this.pruneTimer) clearInterval(this.pruneTimer)
+    for (const timer of this.queueDrainTimersByThreadId.values()) clearTimeout(timer)
     this.queueDrainTimersByThreadId.clear()
     this.queueDrainDueAtByThreadId.clear()
-    this.processingThreadIds.clear()
+    this.recoveryChecks.clear()
+    this.threadsNeedingResume.clear()
+    this.history.clear()
+    this.disposal = this.deliveries.dispose()
+    return this.disposal
   }
 
   async scheduleAllQueuedThreads(delayMs = 0): Promise<void> {
     try {
-      const state = await readThreadQueueState()
-      for (const threadId of Object.keys(state)) {
-        this.scheduleThreadQueueDrain(threadId, delayMs)
-      }
-    } catch {
-      // Queue recovery is best-effort; normal turn-completed events can still drain later.
+      for (const threadId of Object.keys(await this.readState())) this.scheduleThreadQueueDrain(threadId, delayMs)
+    } catch (error) {
+      console.error('[delivery] 自动恢复已停止:', getErrorMessage(error, '无法读取发送记录'))
     }
   }
 
   scheduleThreadQueueDrain(threadId: string, delayMs = 5000): void {
-    if (!threadId) return
+    if (!threadId || this.disposed) return
     const normalizedDelayMs = Math.max(0, delayMs)
     const nextDueAt = Date.now() + normalizedDelayMs
     const existingDueAt = this.queueDrainDueAtByThreadId.get(threadId)
@@ -7001,8 +6802,6 @@ export class BackendQueueProcessor {
     if (existingTimer) {
       if (existingDueAt !== undefined && existingDueAt <= nextDueAt) return
       clearTimeout(existingTimer)
-      this.queueDrainTimersByThreadId.delete(threadId)
-      this.queueDrainDueAtByThreadId.delete(threadId)
     }
     const timer = setTimeout(() => {
       this.queueDrainTimersByThreadId.delete(threadId)
@@ -7015,83 +6814,52 @@ export class BackendQueueProcessor {
   }
 
   async processThreadQueue(threadId: string): Promise<void> {
-    if (this.processingThreadIds.has(threadId)) return
+    if (this.disposed || this.processingThreadIds.has(threadId)) return
     this.processingThreadIds.add(threadId)
     try {
-      const canStart = await this.canStartQueuedTurn(threadId)
-      if (!canStart) {
-        if (await this.hasQueuedTurns(threadId)) {
-          this.scheduleThreadQueueDrain(threadId)
-        }
+      const rows = await this.store.records(threadId)
+      const uncertain = rows.find(row => ['sending', 'unknown'].includes(row.status))
+      if (uncertain) {
+        const count = this.recoveryChecks.get(uncertain.message.id) ?? 0
+        if (count >= 3) return
+        this.recoveryChecks.set(uncertain.message.id, count + 1)
+        await this.deliveries.reconcile(uncertain.message.id)
+        this.scheduleThreadQueueDrain(threadId, [1000, 5000, 15000][count])
         return
       }
-      const next = await this.popNextQueuedTurn(threadId)
-      if (!next) return
-      try {
-        await this.startQueuedTurn(next)
-        if (await this.hasQueuedTurns(threadId)) {
-          this.scheduleThreadQueueDrain(threadId)
-        }
-      } catch {
-        await this.restoreQueuedTurn(next)
-        this.scheduleThreadQueueDrain(threadId)
-      }
-    } catch {
-      // Queue processing is best-effort. Keep the bridge alive if app-server is unavailable.
-      this.scheduleThreadQueueDrain(threadId)
+      const steer = rows.find(row => row.status === 'queued' && row.mode === 'steer')
+      const head = steer ?? rows[0]
+      if (!head || head.status !== 'queued') return
+      await this.deliveries.process(threadId, steer?.message.id)
+      if ((await this.store.records(threadId)).length) this.scheduleThreadQueueDrain(threadId)
+    } catch (error) {
+      // A persisted failure remains visible through readState; it never authorizes replay.
+      console.error('[delivery] 队列已暂停:', getErrorMessage(error, '发送状态读取失败'))
     } finally {
       this.processingThreadIds.delete(threadId)
     }
   }
 
-  private async hasQueuedTurns(threadId: string): Promise<boolean> {
-    const state = await readThreadQueueState()
-    const queue = state[threadId]
-    return Array.isArray(queue) && queue.length > 0
-  }
-
   private async canStartQueuedTurn(threadId: string): Promise<boolean> {
-    const response = asRecord(await this.appServer.rpc('thread/read', { threadId, includeTurns: true }))
+    if (this.appServer.listPendingServerRequests().some(row => extractThreadIdFromNotificationParams(row.params) === threadId)) return false
+    const statusType = await this.readThreadStatus(threadId)
+    return !['inProgress', 'running', 'active'].includes(statusType)
+  }
+
+  private async readThreadStatus(threadId: string): Promise<string> {
+    this.threadsNeedingResume.delete(threadId)
+    let response: Record<string, unknown> | null
+    try {
+      response = asRecord(await this.appServer.rpc('thread/read', { threadId, includeTurns: false }))
+    } catch (error) {
+      if (!isEmptyThreadReadError(error)) throw error
+      response = asRecord(this.appServer.getLastThreadReadSnapshot(threadId))
+    }
     const thread = asRecord(response?.thread)
-    if (!thread) return false
-
-    const status = asRecord(thread.status)
-    const statusType = readNonEmptyString(status?.type)
-    if (statusType === 'inProgress' || statusType === 'running' || statusType === 'active') return false
-
-    const turns = Array.isArray(thread.turns) ? thread.turns : []
-    return !turns.some((turn) => readNonEmptyString(asRecord(turn)?.status) === 'inProgress')
-  }
-
-  private async popNextQueuedTurn(threadId: string): Promise<BackendQueuedTurn | null> {
-    return withThreadQueueStateUpdate((state) => {
-      const queue = state[threadId]
-      if (!queue || queue.length === 0) {
-        return { nextState: state, result: null }
-      }
-
-      const [message, ...rest] = queue
-      const nextState = { ...state }
-      if (rest.length > 0) {
-        nextState[threadId] = rest
-      } else {
-        delete nextState[threadId]
-      }
-      return { nextState, result: { threadId, message } }
-    })
-  }
-
-  private async restoreQueuedTurn(turn: BackendQueuedTurn): Promise<void> {
-    await withThreadQueueStateUpdate((state) => {
-      const queue = state[turn.threadId] ?? []
-      return {
-        nextState: {
-          ...state,
-          [turn.threadId]: [turn.message, ...queue],
-        },
-        result: undefined,
-      }
-    })
+    if (!thread) throw new Error('无法读取会话状态')
+    const statusType = readNonEmptyString(asRecord(thread.status)?.type) || readNonEmptyString(thread.status)
+    if (statusType === 'notLoaded') this.threadsNeedingResume.add(threadId)
+    return statusType
   }
 
   private async resolveCollaborationModeSettings(mode: CollaborationModeKind): Promise<ResolvedCollaborationModeSettings> {
@@ -7131,7 +6899,7 @@ export class BackendQueueProcessor {
     throw new Error(`${mode === 'plan' ? 'Plan' : 'Default'} mode requires an available model.`)
   }
 
-  private async buildQueuedTurnParams(turn: BackendQueuedTurn): Promise<Record<string, unknown>> {
+  async buildQueuedTurnParams(turn: BackendQueuedTurn): Promise<Record<string, unknown>> {
     const localImageAttachments: StoredQueuedMessage['fileAttachments'] = []
     for (const imageUrl of turn.message.imageUrls) {
       const localImagePath = extractLocalImagePathFromUrl(imageUrl.trim())
@@ -7175,158 +6943,63 @@ export class BackendQueueProcessor {
       params.attachments = dedupedFileAttachments.map((f) => ({ label: f.label, path: f.path, fsPath: f.fsPath }))
     }
 
-    try {
-      const settings = await this.resolveCollaborationModeSettings(turn.message.collaborationMode)
-      params.collaborationMode = {
-        mode: turn.message.collaborationMode,
-        settings: {
-          model: settings.model,
-          reasoning_effort: settings.reasoningEffort,
-          developer_instructions: null,
-        },
-      }
-    } catch {
-      // Older app-server versions still accept a plain turn/start without collaborationMode.
+    const defaults = turn.message.model ? null : await this.resolveCollaborationModeSettings(turn.message.collaborationMode)
+    const model = turn.message.model || defaults!.model
+    const reasoningEffort = turn.message.effort !== undefined ? turn.message.effort || null : defaults?.reasoningEffort || null
+    params.model = model
+    if (turn.message.effort) params.effort = turn.message.effort
+    if (turn.message.serviceTier !== undefined) params.serviceTier = turn.message.serviceTier
+    params.collaborationMode = {
+      mode: turn.message.collaborationMode,
+      settings: { model, reasoning_effort: reasoningEffort, developer_instructions: null },
     }
 
     return params
   }
 
-  private async startQueuedTurn(turn: BackendQueuedTurn): Promise<void> {
-    await this.appServer.rpc('thread/resume', { threadId: turn.threadId })
-    await this.appServer.rpc('turn/start', await this.buildQueuedTurnParams(turn))
-  }
-}
-
-class MethodCatalog {
-  private methodCache: string[] | null = null
-  private notificationCache: string[] | null = null
-
-  private async runGenerateSchemaCommand(outDir: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const codexCommand = resolveCodexCommand()
-      if (!codexCommand) {
-        reject(new Error('Codex CLI is not available. Install @openai/codex or set CODEXUI_CODEX_COMMAND.'))
-        return
-      }
-
-      const invocation = getSpawnInvocation(codexCommand, ['app-server', 'generate-json-schema', '--out', outDir])
-      const process = spawn(invocation.command, invocation.args, {
-        stdio: ['ignore', 'ignore', 'pipe'],
-      })
-
-      let stderr = ''
-
-      process.stderr.setEncoding('utf8')
-      process.stderr.on('data', (chunk: string) => {
-        stderr += chunk
-      })
-
-      process.on('error', reject)
-      process.on('exit', (code) => {
-        if (code === 0) {
-          resolve()
-          return
-        }
-
-        reject(new Error(stderr.trim() || `generate-json-schema exited with code ${String(code)}`))
-      })
-    })
-  }
-
-  private extractMethodsFromClientRequest(payload: unknown): string[] {
-    const root = asRecord(payload)
-    const oneOf = Array.isArray(root?.oneOf) ? root.oneOf : []
-    const methods = new Set<string>()
-
-    for (const entry of oneOf) {
-      const row = asRecord(entry)
-      const properties = asRecord(row?.properties)
-      const methodDef = asRecord(properties?.method)
-      const methodEnum = Array.isArray(methodDef?.enum) ? methodDef.enum : []
-
-      for (const item of methodEnum) {
-        if (typeof item === 'string' && item.length > 0) {
-          methods.add(item)
-        }
-      }
-    }
-
-    return Array.from(methods).sort((a, b) => a.localeCompare(b))
-  }
-
-  private extractMethodsFromServerNotification(payload: unknown): string[] {
-    const root = asRecord(payload)
-    const oneOf = Array.isArray(root?.oneOf) ? root.oneOf : []
-    const methods = new Set<string>()
-
-    for (const entry of oneOf) {
-      const row = asRecord(entry)
-      const properties = asRecord(row?.properties)
-      const methodDef = asRecord(properties?.method)
-      const methodEnum = Array.isArray(methodDef?.enum) ? methodDef.enum : []
-
-      for (const item of methodEnum) {
-        if (typeof item === 'string' && item.length > 0) {
-          methods.add(item)
-        }
-      }
-    }
-
-    return Array.from(methods).sort((a, b) => a.localeCompare(b))
-  }
-
-  async listMethods(): Promise<string[]> {
-    if (this.methodCache) {
-      return this.methodCache
-    }
-
-    const outDir = await mkdtemp(join(tmpdir(), 'codex-web-local-schema-'))
-    await this.runGenerateSchemaCommand(outDir)
-
-    const clientRequestPath = join(outDir, 'ClientRequest.json')
-    const raw = await readFile(clientRequestPath, 'utf8')
-    const parsed = JSON.parse(raw) as unknown
-    const methods = this.extractMethodsFromClientRequest(parsed)
-
-    this.methodCache = methods
-    return methods
-  }
-
-  async listNotificationMethods(): Promise<string[]> {
-    if (this.notificationCache) {
-      return this.notificationCache
-    }
-
-    const outDir = await mkdtemp(join(tmpdir(), 'codex-web-local-schema-'))
-    await this.runGenerateSchemaCommand(outDir)
-
-    const serverNotificationPath = join(outDir, 'ServerNotification.json')
-    const raw = await readFile(serverNotificationPath, 'utf8')
-    const parsed = JSON.parse(raw) as unknown
-    const methods = this.extractMethodsFromServerNotification(parsed)
-
-    this.notificationCache = methods
-    return methods
-  }
 }
 
 type CodexBridgeMiddleware = ((req: IncomingMessage, res: ServerResponse, next: () => void) => Promise<void>) & {
-  dispose: () => void
+  dispose: () => Promise<void>
   subscribeNotifications: (listener: (value: { method: string; params: unknown; atIso: string }) => void) => () => void
 }
 
 type SharedBridgeState = {
+  unsubscribeQuota: () => void
+  quotaResume: ThreadQuotaResume
+  disposed: boolean
+  owners: number
+  disposal: Promise<void> | null
   version: string
   appServer: AppServerProcess
   terminalManager: ThreadTerminalManager
   methodCatalog: MethodCatalog
   telegramBridge: TelegramThreadBridge
   backendQueueProcessor: BackendQueueProcessor
+  automationEngine: AutomationEngine
+  threadGoalReader: ThreadGoalReader
+  threadCompactionGate: ThreadCompactionGate
+  processActivity: ProcessActivityStore
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
-const SHARED_BRIDGE_VERSION = 'experimental-api-v2'
+const SHARED_BRIDGE_VERSION = 'shared-runtime-0214-isolated-accounts-v1'
+
+function disposeSharedBridgeState(state: SharedBridgeState): Promise<void> {
+  if (state.disposal) return state.disposal
+    state.disposed = true
+  state.disposal = (async () => {
+    state.unsubscribeQuota?.()
+    const automationDisposal = state.automationEngine.dispose()
+    state.telegramBridge.stop()
+    state.terminalManager.dispose()
+    const deliveryDisposal = state.backendQueueProcessor.dispose()
+    state.appServer.stopTaskRouting?.()
+    state.appServer.dispose()
+    await Promise.all([automationDisposal, deliveryDisposal, state.processActivity.flush(), state.quotaResume?.close()])
+  })()
+  return state.disposal
+}
 
 function getSharedBridgeState(): SharedBridgeState {
   const globalScope = globalThis as typeof globalThis & {
@@ -7334,23 +7007,138 @@ function getSharedBridgeState(): SharedBridgeState {
   }
 
   const existing = globalScope[SHARED_BRIDGE_KEY]
-  if (existing) {
-    if (existing.version === SHARED_BRIDGE_VERSION && existing.terminalManager) {
-      return existing
-    }
-    existing.appServer.dispose()
-    existing.backendQueueProcessor?.dispose()
-    existing.terminalManager?.dispose()
+  if (existing && !existing.disposed && existing.version === SHARED_BRIDGE_VERSION && existing.terminalManager) {
+    return existing
   }
+  const previousRuntimeStopped = existing ? disposeSharedBridgeState(existing) : undefined
 
   const appServer = new AppServerProcess()
+  let wakeQuotaResume = () => {}
+  const lastQuotaUsage = new Map<string, number[]>()
+  const unsubscribeQuota = getAccountAuthCoordinator().subscribeQuotaUpdates(account => {
+    appServer.notifyAccountQuota(account)
+    const usage = [account.quotaSnapshot?.primary?.usedPercent, account.quotaSnapshot?.secondary?.usedPercent]
+      .filter((value): value is number => typeof value === 'number')
+    const previous = lastQuotaUsage.get(account.storageId)
+    lastQuotaUsage.set(account.storageId, usage)
+    if (!previous || usage.some((value, index) => value < (previous[index] ?? Infinity))) wakeQuotaResume()
+  })
+  const processActivity = existing?.processActivity ?? new ProcessActivityStore(join(getCodexHomeDir(), 'codexapp-hook-observations.json'))
   const terminalManager = new ThreadTerminalManager()
-  const backendQueueProcessor = new BackendQueueProcessor(appServer)
+  const methodCatalog = new MethodCatalog()
+  appServer.backgroundActivity = async () => {
+    const methods = (await methodCatalog.snapshot()).methods
+    if (!methods.includes('thread/backgroundTerminals/list')) return []
+    if (!methods.includes('thread/loaded/list')) throw new Error('无法完整核对后台终端，暂不能切换账号')
+    return threadsWithBackgroundTerminals((method, params) => appServer.rpc(method, params))
+  }
+  const backendQueueProcessor = new BackendQueueProcessor(appServer, { features: async () => (await methodCatalog.snapshot()).features, previousRuntimeStopped })
+  const quotaResume = new ThreadQuotaResume(getCodexHomeDir(), {
+    inspect: async threadId => {
+      const response = asRecord((await backendQueueProcessor.history.page(threadId, { limit: 1 })).result)
+      const thread = asRecord(response?.thread)
+      const turns = Array.isArray(thread?.turns) ? thread.turns : []
+      const last = asRecord(turns.at(-1))
+      const active = appServer.taskAccountBusy() || Boolean((await backendQueueProcessor.readState())[threadId]?.length)
+        || ['active', 'running', 'inProgress'].includes(readNonEmptyString(asRecord(thread?.status)?.type) || String(thread?.status))
+        || appServer.listPendingServerRequests().some(request => asRecord(request.params)?.threadId === threadId)
+      return { active, turnId: readNonEmptyString(last?.id) || null, status: readNonEmptyString(last?.status), error: JSON.stringify(last?.error || '') }
+    },
+    available: async () => {
+      const coordinator = getAccountAuthCoordinator()
+      if (appServer.taskAccountBusy() || coordinator.blocksNewSubmissions()) return false
+      const state = await coordinator.store.readState()
+      const account = state.accounts.find(row => row.storageId === state.activeStorageId)
+      if (!account || account.quotaStatus !== 'ready' || !account.quotaSnapshot || !account.quotaUpdatedAtIso || Date.now() - Date.parse(account.quotaUpdatedAtIso) > 5 * 60_000) return false
+      const windows = [account.quotaSnapshot.primary, account.quotaSnapshot.secondary].filter(Boolean)
+      if (!windows.length || windows.some(window => window!.usedPercent >= 100)) return false
+      try { await coordinator.assertSubmissionAllowed(undefined); return true } catch { return false }
+    },
+    submit: async (threadId, id) => {
+      const message = { id, text: '继续之前的工作', imageUrls: [], skills: [], fileAttachments: [], collaborationMode: 'default' as const }
+      let params: Record<string, unknown>
+      try { params = await backendQueueProcessor.buildQueuedTurnParams({ threadId, message }) }
+      catch { throw Object.assign(new Error('续跑参数准备未完成，稍后重试'), { retryableQuota: true }) }
+      const result = await backendQueueProcessor.submit({ protocol: 2, threadId, message, params, expectedContextId: await backendQueueProcessor.deliveryContext() })
+      if (result.status === 'failed') {
+        const row = await backendQueueProcessor.deliveries.result(id)
+        if (row && 'message' in row && /额度|限额/.test(row.error || '')) {
+          await backendQueueProcessor.store.remove(id, row.revision)
+          throw Object.assign(new Error('额度仍受限'), { retryableQuota: true })
+        }
+        throw new Error('续跑准备失败，请核对会话')
+      }
+    },
+    reconcile: async (threadId, id, attemptedAt) => {
+      const row = await backendQueueProcessor.deliveries.result(id)
+      // A recent durable claim with no ledger record failed before submission.
+      // Old missing receipts may have expired; never replay those automatically.
+      if (!row) {
+        return attemptedAt && Date.now() - attemptedAt < 86400_000 ? 'waiting' : 'unknown'
+      }
+      if (row.threadId !== threadId) return 'unknown'
+      if (!('message' in row) || row.status === 'queued' || row.status === 'sending') return 'submitted'
+      if (row.status === 'unknown') {
+        const reconciled = await backendQueueProcessor.deliveries.reconcile(id)
+        return reconciled && !('message' in reconciled) ? 'submitted' : 'unknown'
+      }
+      return 'unknown'
+    },
+    cancel: async id => {
+      const row = await backendQueueProcessor.deliveries.result(id)
+      if (row && 'message' in row && row.status === 'queued') await backendQueueProcessor.store.remove(id, row.revision)
+    },
+    changed: () => appServer.notifyQuotaResumeChanged(),
+  })
+  wakeQuotaResume = () => { void quotaResume.tick().catch(() => undefined) }
+  appServer.quotaBlocked = (threadId, turnId) => quotaResume.blocked(threadId, turnId)
+  const threadGoalReader = new ThreadGoalReader((method, params) => appServer.rpc(method, params))
+  const threadCompactionGate = new ThreadCompactionGate((method, params) => appServer.rpc(method, params),
+    async threadId => backendQueueProcessor.isIdentityChanging() || Boolean((await backendQueueProcessor.readState())[threadId]?.length))
+  const automationEngine = new AutomationEngine(getCodexHomeDir(), createAutomationRuntime({
+    rpc: (method, params, runId) => appServer.automationRpc(method, params, runId),
+    acquireAccount: (runId, settings) => appServer.acquireTaskAccount(runId, settings),
+    releaseAccount: runId => appServer.releaseTaskAccount(runId),
+    accountStorageId: runId => appServer.taskAccountStorageId(runId),
+    accountBusy: () => false,
+    hasQueuedMessages: async (id) => Boolean((await backendQueueProcessor.readState())[id]?.length),
+    pendingRequests: () => appServer.listPendingServerRequests(),
+    readHistory: async threadId => (await backendQueueProcessor.history.page(threadId, { limit: 50 })).result,
+    buildParams: async (threadId, text) => ({ threadId, input: [{ type: 'text', text }] }),
+  }), Date.now, true, previousRuntimeStopped)
+  appServer.automationActivity = () => automationEngine.activity()
+  appServer.accountDisconnected = (storageId, primary, runIds) => {
+    void automationEngine.cancelAccount(storageId, primary, runIds).catch(() => undefined)
+    if (primary) void backendQueueProcessor.cancelAccountDeliveries().catch(() => undefined)
+  }
+  appServer.onNotification((notification) => {
+    if (notification.method === 'turn/completed') {
+      const params = asRecord(notification.params)
+      const threadId = readNonEmptyString(params?.threadId)
+      const turnId = readNonEmptyString(asRecord(params?.turn)?.id) || readNonEmptyString(params?.turnId)
+      void appServer.completions.complete(threadId, turnId).catch(() => console.error('Failed to persist completion list'))
+    }
+    quotaResume.observe(notification)
+    if (notification.method === 'account/rateLimits/updated') void appServer.observeAccountQuota(notification.params).catch(() => undefined)
+    automationEngine.notification(notification)
+    threadGoalReader.observe(notification)
+    threadCompactionGate.observe(notification)
+    processActivity.observe(notification)
+  })
   const created: SharedBridgeState = {
+    unsubscribeQuota,
+    quotaResume,
+    disposed: false,
+    owners: 0,
+    disposal: null,
+    automationEngine,
+    threadGoalReader,
+    threadCompactionGate,
+    processActivity,
     version: SHARED_BRIDGE_VERSION,
     appServer,
     terminalManager,
-    methodCatalog: new MethodCatalog(),
+    methodCatalog,
     backendQueueProcessor,
     telegramBridge: new TelegramThreadBridge(appServer, {
       onChatSeen: (chatId) => {
@@ -7362,102 +7150,45 @@ function getSharedBridgeState(): SharedBridgeState {
   return created
 }
 
-async function loadAllThreadsForSearch(appServer: AppServerProcess): Promise<ThreadSearchDocument[]> {
-  const threads: Array<{ id: string; title: string; preview: string }> = []
-  let cursor: string | null = null
-
-  do {
-    const response = asRecord(await appServer.rpc('thread/list', {
-      archived: false,
-      limit: 100,
-      sortKey: 'updated_at',
-      modelProviders: [],
-      cursor,
-    }))
-    const data = Array.isArray(response?.data) ? response.data : []
-    for (const row of data) {
-      const record = asRecord(row)
-      const id = typeof record?.id === 'string' ? record.id : ''
-      if (!id) continue
-      const title = typeof record?.name === 'string' && record.name.trim().length > 0
-        ? record.name.trim()
-        : (typeof record?.preview === 'string' && record.preview.trim().length > 0 ? record.preview.trim() : 'Untitled thread')
-      const preview = typeof record?.preview === 'string' ? record.preview : ''
-      threads.push({ id, title, preview })
-    }
-    cursor = typeof response?.nextCursor === 'string' && response.nextCursor.length > 0 ? response.nextCursor : null
-  } while (cursor)
-
-  const docs: ThreadSearchDocument[] = threads.map((thread) => {
-    const searchableText = [thread.title, thread.preview].filter(Boolean).join('\n')
-    return {
-      id: thread.id,
-      title: thread.title,
-      preview: thread.preview,
-      messageText: '',
-      searchableText,
-    } satisfies ThreadSearchDocument
-  })
-
-  const docsById = new Map<string, ThreadSearchDocument>(docs.map((doc) => [doc.id, doc]))
-  const fullTextThreads = threads.slice(0, THREAD_SEARCH_FULL_TEXT_THREAD_LIMIT)
-  const concurrency = 4
-  for (let offset = 0; offset < fullTextThreads.length; offset += concurrency) {
-    const batch = fullTextThreads.slice(offset, offset + concurrency)
-    const loaded = await Promise.all(batch.map(async (thread) => {
-      try {
-        const readResponse = await appServer.rpc('thread/read', {
-          threadId: thread.id,
-          includeTurns: true,
-        })
-        const messageText = extractThreadMessageText(readResponse)
-        const searchableText = [thread.title, thread.preview, messageText].filter(Boolean).join('\n')
-        return [thread.id, {
-          id: thread.id,
-          title: thread.title,
-          preview: thread.preview,
-          messageText,
-          searchableText,
-        } satisfies ThreadSearchDocument] as const
-      } catch {
-        return null
-      }
-    }))
-    for (const row of loaded) {
-      if (!row) continue
-      docsById.set(row[0], row[1])
-    }
-  }
-
-  return Array.from(docsById.values())
-}
-
-async function buildThreadSearchIndex(appServer: AppServerProcess): Promise<ThreadSearchIndex> {
-  const docs = await loadAllThreadsForSearch(appServer)
-  const docsById = new Map<string, ThreadSearchDocument>(docs.map((doc) => [doc.id, doc]))
-  return { docsById }
-}
-
 export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
-  const { appServer, terminalManager, methodCatalog, telegramBridge, backendQueueProcessor } = getSharedBridgeState()
-  let threadSearchIndex: ThreadSearchIndex | null = null
-  let threadSearchIndexPromise: Promise<ThreadSearchIndex> | null = null
-
-  async function getThreadSearchIndex(): Promise<ThreadSearchIndex> {
-    if (threadSearchIndex) return threadSearchIndex
-    if (!threadSearchIndexPromise) {
-      threadSearchIndexPromise = buildThreadSearchIndex(appServer)
-        .then((index) => {
-          threadSearchIndex = index
-          return index
-        })
-        .finally(() => {
-          threadSearchIndexPromise = null
-        })
-    }
-    return threadSearchIndexPromise
-  }
-  void initializeSkillsSyncOnStartup(appServer)
+  const sharedState = getSharedBridgeState()
+  sharedState.owners++
+  const { appServer, terminalManager, methodCatalog, telegramBridge, backendQueueProcessor, automationEngine, threadGoalReader, threadCompactionGate, quotaResume } = sharedState
+  const directoryMcps = new DirectoryMcpReader((method, params) => appServer.rpc(method, params))
+  const backgroundTerminals = new BackgroundTerminalReader((method, params) => appServer.rpc(method, params), () => backendQueueProcessor.isIdentityChanging())
+  const history = new ThreadHistory(
+    (method, params) => callRpcWithArchiveRecovery(appServer, method, params),
+    async () => (await methodCatalog.snapshot()).features,
+  )
+  const unsubscribeHistory = appServer.onNotification(({ params }) => {
+    const value = asRecord(params)
+    const threadId = readNonEmptyString(value?.threadId) || readNonEmptyString(value?.thread_id) || readNonEmptyString(asRecord(value?.thread)?.id)
+    if (threadId) history.invalidate(threadId)
+  })
+  const search = new ThreadSearch({
+    list: async cursor => {
+      const raw = await callRpcWithArchiveRecovery(appServer, 'thread/list', { archived: false, limit: 100, sortKey: 'updated_at', modelProviders: [], cursor })
+      const result = asRecord(await mergeImportedThreadsIntoThreadListResult(raw, { cursor }))
+      return { data: Array.isArray(result?.data) ? result.data : [], nextCursor: readNonEmptyString(result?.nextCursor) || null }
+    },
+    body: async thread => {
+      const page = await history.page(thread.id, { metadata: { thread }, limit: SEARCH_BODY_TURN_LIMIT })
+      return { text: extractThreadSearchText(page.result), truncated: page.hasMoreOlder }
+    },
+    titles: async () => (await readMergedThreadTitleCache()).titles,
+    version: async thread => {
+      const path = readNonEmptyString(thread.path)
+      if (!path || !isAbsolute(path)) return ''
+      const info = await stat(path, { bigint: true }).catch(() => null)
+      return info ? `${info.ino}:${info.size}:${info.mtimeNs}` : ''
+    },
+  })
+  const unsubscribeSearch = appServer.onNotification(({ method, params }) => {
+    if (!changesThreadSearch(method)) return
+    const value = asRecord(params)
+    const threadId = readNonEmptyString(value?.threadId) || readNonEmptyString(value?.thread_id) || readNonEmptyString(asRecord(value?.thread)?.id)
+    search.invalidate(threadId || undefined)
+  })
   void readTelegramBridgeConfig()
     .then((config) => {
       if (!config.botToken) return
@@ -7482,6 +7213,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       : null
     let responseBodyBytes = 0
     let rpcMethod: string | null = null
+    let releaseProviderChange: (() => void) | undefined
     const originalWrite = res.write.bind(res)
     const originalEnd = res.end.bind(res)
     res.write = ((chunk: unknown, encoding?: unknown, cb?: unknown) => {
@@ -7565,6 +7297,17 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (url.pathname.startsWith('/codex-api/free-mode')) {
+        if (req.method === 'POST') {
+          releaseProviderChange = backendQueueProcessor.beginProviderChange()
+          const quiescence = await appServer.getRuntimeQuiescenceSnapshot()
+          if (!quiescence.idle) {
+            const error = quiescence.backgroundThreadIds?.length
+              ? '请先处理 Codex 后台终端，再切换供应方或密钥。'
+              : '请先结束当前任务并处理队列，再切换供应方或密钥'
+            setJson(res, 409, { error })
+            return
+          }
+        }
         const statePath = join(getCodexHomeDir(), FREE_MODE_STATE_FILE)
 
         function readFreeModeState(): FreeModeState {
@@ -7944,7 +7687,24 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
         let rpcResult: unknown
         try {
-          rpcResult = await callRpcWithArchiveRecovery(appServer, body.method, body.params ?? null)
+          const params = asRecord(body.params) ?? {}
+          if (['config/batchWrite', 'config/value/write', 'config/mcpServer/reload', 'plugin/install', 'plugin/uninstall'].includes(body.method)) directoryMcps.invalidate()
+          if (body.method === 'turn/start' || body.method === 'turn/steer') throw new Error('发送接口已更新，请刷新页面后重试')
+          if (body.method === 'thread/rollback') await history.assertRollbackAllowed(readNonEmptyString(params.threadId))
+          if (body.method === 'thread/compact/start') {
+            rpcResult = await threadCompactionGate.start(readNonEmptyString(params.threadId), params.repeatUnknown === true)
+          } else if (body.method === 'thread/resume' || (body.method === 'thread/read' && params.includeTurns === true)) {
+            rpcResult = await history.initial(body.method, params)
+          } else {
+            rpcResult = await callRpcWithArchiveRecovery(appServer, body.method, body.params ?? null)
+          }
+          if (['turn/start', 'turn/steer', 'thread/rollback', 'thread/archive', 'thread/unarchive', 'thread/name/set'].includes(body.method)) {
+            const threadId = readNonEmptyString(params.threadId)
+            if (threadId) {
+              history.invalidate(threadId)
+              search.invalidate(threadId)
+            }
+          }
         } catch (error) {
 	          if (body.method === 'account/rateLimits/read' && isUnauthenticatedRateLimitError(error)) {
 	            setJson(res, 200, { result: null })
@@ -7982,7 +7742,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           ? mergeStreamTurnErrorsIntoThreadResult(appServer, trimmedResult)
           : trimmedResult
         const listMergedResult = body.method === 'thread/list'
-          ? mergeImportedThreadsIntoThreadListResult(errorMergedResult)
+          ? mergeImportedThreadsIntoThreadListResult(errorMergedResult, body.params)
           : errorMergedResult
         const sanitizedResult = await sanitizeThreadTurnsInlinePayloads(body.method, listMergedResult)
         const result = THREAD_METHODS_WITH_TURNS.has(body.method)
@@ -8002,6 +7762,97 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (url.pathname.startsWith('/codex-api/process-activity/')) {
+        const body = req.method === 'POST' ? asRecord(await readJsonBody(req)) : null
+        const threadId = readNonEmptyString(body?.threadId) || url.searchParams.get('threadId')?.trim() || ''
+        if (!threadId || threadId.length > 200) {
+          setJson(res, 400, { error: '缺少有效会话 ID' })
+          return
+        }
+        if (req.method === 'GET' && url.pathname.endsWith('/hooks')) {
+          const snapshot = await sharedState.processActivity.snapshot(threadId)
+          setJson(res, 200, { data: { ...snapshot, runs: snapshot.runs.map(run => ({ ...run, entries: run.entries.slice(0, 1).map(entry => ({ ...entry, text: entry.text.slice(0, 160) })) })) } })
+          return
+        }
+        if (req.method === 'GET' && url.pathname.endsWith('/hook-detail')) {
+          const snapshot = await sharedState.processActivity.snapshot(threadId)
+          const run = snapshot.runs.find(run => hookRunKey(run) === url.searchParams.get('runKey'))
+          setJson(res, run ? 200 : 404, run ? { data: run } : { error: 'Hook 记录已不在保留范围内' })
+          return
+        }
+        if (req.method === 'GET' && url.pathname.endsWith('/hook-config')) {
+          const cwd = url.searchParams.get('cwd')?.trim() || ''
+          if (!cwd) throw new Error('缺少会话目录')
+          setJson(res, 200, { data: readHookConfiguration(await appServer.rpc('hooks/list', { cwds: [cwd] }), cwd) })
+          return
+        }
+        if (req.method === 'GET' && url.pathname.endsWith('/terminals')) {
+          setJson(res, 200, { data: await backgroundTerminals.list(threadId) })
+          return
+        }
+        if (req.method === 'POST' && url.pathname.endsWith('/terminate')) {
+          const processId = readNonEmptyString(body?.processId)
+          const itemId = readNonEmptyString(body?.itemId)
+          if (!processId || !itemId) throw new Error('缺少进程或命令项 ID')
+          setJson(res, 200, { data: await backgroundTerminals.terminate(threadId, processId, itemId) })
+          return
+        }
+        if (req.method === 'GET' && url.pathname.endsWith('/output')) {
+          const itemId = url.searchParams.get('itemId')?.trim() || ''
+          if (!itemId) throw new Error('缺少命令项 ID')
+          let output = sharedState.processActivity.output(threadId, itemId)
+          if (!output?.text) {
+            const page = await history.page(threadId, { limit: 10 })
+            const thread = asRecord(asRecord(page.result)?.thread)
+            const turns = thread?.turns
+            if (Array.isArray(turns)) {
+              for (const turn of turns) {
+                const items = asRecord(turn)?.items
+                if (!Array.isArray(items)) continue
+                const item = items.find(item => asRecord(item)?.id === itemId)
+                const saved = item ? readCommandOutput(item, 'history') : null
+                if (saved?.text || !output) output = saved || output
+              }
+            }
+            const command = sharedState.processActivity.command(threadId, itemId)
+            const path = readNonEmptyString(thread?.path)
+            if (!output?.text && command && path) {
+              const text = await readCommandToolOutput(path, command)
+              if (text) output = { itemId, text, status: output?.status || 'unknown', exitCode: output?.exitCode ?? null, truncated: true, source: 'toolResult' }
+            }
+          }
+          setJson(res, 200, { data: output || { itemId, text: '', status: 'unknown', exitCode: null, truncated: false, source: 'unavailable' } })
+          return
+        }
+        setJson(res, 404, { error: '未知进程操作' })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/directory/mcps') {
+        try {
+          const data = await directoryMcps.read(url.searchParams.get('threadId')?.trim() || '', url.searchParams.get('full') === 'true')
+          setJson(res, 200, { data })
+        } catch (error) {
+          setJson(res, 502, { error: getErrorMessage(error, 'MCP 状态读取失败') })
+        }
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/task-excerpt') {
+        const threadId = url.searchParams.get('threadId')?.trim() || ''
+        if (!threadId) {
+          setJson(res, 400, { error: '缺少任务 ID' })
+          return
+        }
+        try {
+          const page = await history.page(threadId, { limit: 10 })
+          setJson(res, 200, { data: extractTaskExcerpt(asRecord(page.result)?.thread, page.hasMoreOlder) })
+        } catch (error) {
+          setJson(res, 500, { error: getErrorMessage(error, '任务摘录读取失败。') })
+        }
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/thread-turn-page') {
         try {
           const threadId = url.searchParams.get('threadId')?.trim() ?? ''
@@ -8013,54 +7864,46 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             return
           }
 
-          const threadReadResult = mergeStreamTurnErrorsIntoThreadResult(appServer, await appServer.readThreadForTurnPage(threadId))
-          const record = asRecord(threadReadResult)
-          const thread = asRecord(record?.thread)
-          if (!record || !thread) {
-            setJson(res, 502, { error: 'thread/read returned an invalid thread response' })
-            return
-          }
-
-          const turns = Array.isArray(thread.turns) ? thread.turns : []
-          const beforeIndex = beforeTurnId
-            ? turns.findIndex((turn) => asRecord(turn)?.id === beforeTurnId)
-            : turns.length
-          if (beforeTurnId && beforeIndex < 0) {
-            setJson(res, 200, {
-              result: {
-                ...record,
-                thread: {
-                  ...thread,
-                  turns: [],
-                },
-              },
-              startTurnIndex: 0,
-              hasMoreOlder: false,
-            })
-            return
-          }
-
-          const endIndex = beforeIndex
-          const startIndex = Math.max(0, endIndex - limit)
-          const pageTurns = turns.slice(startIndex, endIndex)
-          const pagedResult = {
-            ...record,
-            thread: {
-              ...thread,
-              turns: pageTurns,
-            },
-          }
-          const sanitized = await sanitizeThreadTurnsInlinePayloads('thread/read', pagedResult)
-          const result = await mergeSessionSkillInputsIntoThreadResult(sanitized)
-
-          setJson(res, 200, {
-            result,
-            startTurnIndex: startIndex,
-            hasMoreOlder: startIndex > 0,
+          const page = await history.page(threadId, {
+            beforeTurnId,
+            cursor: url.searchParams.get('cursor') || undefined,
+            source: url.searchParams.get('source') || undefined,
+            limit,
           })
+          const withErrors = mergeStreamTurnErrorsIntoThreadResult(appServer, page.result)
+          const sanitized = await sanitizeThreadTurnsInlinePayloads('thread/read', withErrors)
+          const result = await mergeSessionSkillInputsIntoThreadResult(sanitized)
+          setJson(res, 200, { ...page, result, startTurnIndex: 0 })
         } catch (error) {
           setJson(res, 500, { error: getErrorMessage(error, 'Failed to load earlier thread messages') })
         }
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-turn-items') {
+        const threadId = url.searchParams.get('threadId')?.trim() ?? ''
+        const turnId = url.searchParams.get('turnId')?.trim() ?? ''
+        if (!threadId || !turnId) {
+          setJson(res, 400, { error: 'Missing threadId or turnId' })
+          return
+        }
+        const result = await history.turn(threadId, turnId)
+        const sanitized = await sanitizeThreadTurnsInlinePayloads('thread/read', result)
+        setJson(res, 200, { result: await mergeSessionSkillInputsIntoThreadResult(sanitized) })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-fork-at-turn') {
+        const params = asRecord(await readJsonBody(req))
+        const threadId = readNonEmptyString(params?.threadId)
+        const lastTurnId = readNonEmptyString(params?.lastTurnId)
+        if (!threadId || !lastTurnId) {
+          setJson(res, 400, { error: 'Missing threadId or lastTurnId' })
+          return
+        }
+        const result = await history.fork(threadId, lastTurnId)
+        search.invalidate()
+        setJson(res, 200, { result })
         return
       }
 
@@ -8228,6 +8071,8 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             return
           }
 
+          // Combined history rollback must be supported before any workspace file is changed.
+          if (scope === 'turn_and_later') await history.assertRollbackAllowed(threadId)
           const threadReadResult = await appServer.rpc('thread/read', { threadId, includeTurns: true })
           const record = asRecord(threadReadResult)
           const thread = asRecord(record?.thread)
@@ -8303,66 +8148,6 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
-      if (req.method === 'GET' && url.pathname === '/codex-api/composio/status') {
-        try {
-          setJson(res, 200, await readComposioStatus())
-        } catch (error) {
-          setJson(res, 500, { error: getErrorMessage(error, 'Failed to read Composio status') })
-        }
-        return
-      }
-
-      if (req.method === 'GET' && url.pathname === '/codex-api/composio/connectors') {
-        try {
-          const query = url.searchParams.get('query') ?? ''
-          const cursor = url.searchParams.get('cursor')?.trim() ?? null
-          const limit = parseComposioLimit(url.searchParams.get('limit'))
-          setJson(res, 200, await listComposioConnectors(query, cursor, limit))
-        } catch (error) {
-          setJson(res, 500, { error: getErrorMessage(error, 'Failed to list Composio connectors') })
-        }
-        return
-      }
-
-      if (req.method === 'GET' && url.pathname === '/codex-api/composio/connector') {
-        try {
-          const slug = url.searchParams.get('slug') ?? ''
-          setJson(res, 200, await readComposioConnectorDetail(slug))
-        } catch (error) {
-          setJson(res, 500, { error: getErrorMessage(error, 'Failed to load Composio connector') })
-        }
-        return
-      }
-
-      if (req.method === 'POST' && url.pathname === '/codex-api/composio/link') {
-        try {
-          const payload = asRecord(await readJsonBody(req))
-          const slug = readNonEmptyString(payload?.slug)
-          setJson(res, 200, await startComposioLink(slug))
-        } catch (error) {
-          setJson(res, 500, { error: getErrorMessage(error, 'Failed to start Composio login') })
-        }
-        return
-      }
-
-      if (req.method === 'POST' && url.pathname === '/codex-api/composio/login') {
-        try {
-          setJson(res, 200, await startComposioLogin())
-        } catch (error) {
-          setJson(res, 500, { error: getErrorMessage(error, 'Failed to start Composio CLI login') })
-        }
-        return
-      }
-
-      if (req.method === 'POST' && url.pathname === '/codex-api/composio/install') {
-        try {
-          setJson(res, 200, await installComposioCli())
-        } catch (error) {
-          setJson(res, 500, { error: getErrorMessage(error, 'Failed to install Composio CLI') })
-        }
-        return
-      }
-
       if (req.method === 'GET' && url.pathname === '/codex-api/connector-logo') {
         const src = url.searchParams.get('src')?.trim() ?? ''
         if (!src) {
@@ -8389,7 +8174,12 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (req.method === 'GET' && url.pathname === '/codex-api/server-requests/pending') {
-        setJson(res, 200, { data: appServer.listPendingServerRequests() })
+        setJson(res, 200, { data: appServer.listPendingServerRequests(), authRecovery: appServer.authRecovery.snapshot() })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/meta/capabilities') {
+        setJson(res, 200, { data: { appVersion, ...(await methodCatalog.snapshot()) } })
         return
       }
 
@@ -8469,6 +8259,19 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (url.pathname === '/codex-api/thread-completions') {
+        if (req.method === 'GET') {
+          setJson(res, 200, { data: await appServer.completions.read() })
+          return
+        }
+        if (req.method === 'POST') {
+          const payload = asRecord(await readJsonBody(req))
+          await appServer.completions.acknowledge(readNonEmptyString(payload?.threadId), readNonEmptyString(payload?.token))
+          setJson(res, 200, { ok: true })
+          return
+        }
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/workspace-roots-state') {
         const state = await readWorkspaceRootsState()
         setJson(res, 200, { data: state })
@@ -8476,7 +8279,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (req.method === 'GET' && url.pathname === '/codex-api/thread-queue-state') {
-        const state = await readThreadQueueState()
+        const state = await backendQueueProcessor.readState()
         setJson(res, 200, { data: state })
         return
       }
@@ -9074,16 +8877,34 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
-      if (req.method === 'PUT' && url.pathname === '/codex-api/thread-queue-state') {
-        const payload = await readJsonBody(req)
-        const record = asRecord(payload)
-        if (!record) {
-          setJson(res, 400, { error: 'Invalid body: expected object' })
-          return
+      if (req.method === 'GET' && url.pathname === '/codex-api/delivery-context') {
+        setJson(res, 200, { data: { contextId: await backendQueueProcessor.deliveryContext() } })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/delivery') {
+        try {
+          const result = await backendQueueProcessor.submit(await readJsonBody(req))
+          setJson(res, 200, { data: result })
+        } catch (error) {
+          setJson(res, 409, { error: getErrorMessage(error, '提交消息失败') })
         }
-        await writeThreadQueueState(normalizeThreadQueueState(record))
-        void backendQueueProcessor.scheduleAllQueuedThreads()
-        setJson(res, 200, { ok: true })
+        return
+      }
+
+      if (req.method === 'PUT' && url.pathname === '/codex-api/thread-queue-state') {
+        setJson(res, 409, { error: '队列接口已更新，请刷新页面后重试；服务器队列未修改' })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-queue-state') {
+        const operation = await readJsonBody(req)
+        try {
+          const result = await backendQueueProcessor.mutate(operation)
+          setJson(res, 200, { data: result })
+        } catch (error) {
+          setJson(res, 409, { error: error instanceof Error ? error.message : '队列保存失败' })
+        }
         return
       }
 
@@ -9152,9 +8973,24 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             return
           }
           const result = await importProjectZip(buffer, parent)
+          search.invalidate()
           setJson(res, 200, { data: { path: result.projectPath, importedSessions: result.importedSessions } })
         } catch (error) {
           setJson(res, 400, { error: getErrorMessage(error, 'Failed to import project') })
+        }
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/codex-api/project-directories') {
+        const root = url.searchParams.get('path') ?? ''
+        if (!isAbsolute(root)) {
+          setJson(res, 400, { error: '工作目录必须填写绝对路径' })
+          return
+        }
+        try {
+          setJson(res, 200, { data: await readProjectDirectories(root) })
+        } catch (error) {
+          setJson(res, 400, { error: getErrorMessage(error, '读取项目工作目录失败') })
         }
         return
       }
@@ -9188,6 +9024,14 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
 
+        if (payload && Object.hasOwn(payload, 'directories')) {
+          try {
+            await queueWorkspaceRootsMutation(() => saveProjectDirectories(normalizedPath, payload.directories))
+          } catch (error) {
+            setJson(res, 400, { error: getErrorMessage(error, '保存项目工作目录失败') })
+            return
+          }
+        }
         await persistWorkspaceRoot(normalizedPath, label)
         setJson(res, 200, { data: { path: normalizedPath } })
         return
@@ -9369,6 +9213,51 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/runtime/activity') {
+        setJson(res, 200, { data: appServer.liveActivity() })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/codex-api/automation-runtime') {
+        await automationEngine.readyPromise
+        setJson(res, 200, { data: automationEngine.snapshot() })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/codex-api/automation-runs') {
+        setJson(res, 200, await automationEngine.historyPage(url.searchParams.get('automationId') ?? '', url.searchParams.get('cursor'), Number(url.searchParams.get('limit') || 5)))
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/codex-api/automation-runtime/drain') {
+        const payload = asRecord(await readJsonBody(req))
+        setJson(res, 200, { data: await automationEngine.drain(payload?.draining !== false) })
+        return
+      }
+      if (req.method === 'POST' && ['/codex-api/thread-automation/run', '/codex-api/project-automation/run', '/codex-api/automation-run/retry'].includes(url.pathname)) {
+        const payload = asRecord(await readJsonBody(req))
+        const run = await automationEngine.manual(String(payload?.automationId ?? ''), String(payload?.threadId ?? payload?.projectName ?? payload?.target ?? ''), String(payload?.requestId ?? ''), typeof payload?.retryOf === 'string' ? payload.retryOf : undefined)
+        setJson(res, 200, { data: { queued: run.status === 'queued', run } })
+        void automationEngine.tick()
+        return
+      }
+      if (url.pathname === '/codex-api/thread-quota-resume' && ['GET', 'POST'].includes(req.method || '')) {
+        if (req.method === 'POST') {
+          const input = asRecord(await readJsonBody(req))
+          if (typeof input?.threadId !== 'string' || typeof input.enabled !== 'boolean') {
+            setJson(res, 400, { error: '续跑标记参数无效' })
+            return
+          }
+          await quotaResume.set(input.threadId, input.enabled)
+        }
+        setJson(res, 200, { data: await quotaResume.snapshot() })
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/codex-api/thread-goals') {
+        const payload = asRecord(await readJsonBody(req))
+        if (!Array.isArray(payload?.threadIds) || payload.threadIds.length > 100 || payload.threadIds.some(id => typeof id !== 'string' || !id || id.length > 100)) {
+          setJson(res, 400, { error: '每次最多读取 100 个会话目标' }); return
+        }
+        const refreshId = typeof payload.refreshId === 'string' && payload.threadIds.includes(payload.refreshId) ? payload.refreshId : ''
+        setJson(res, 200, { data: await threadGoalReader.snapshot(payload.threadIds as string[], refreshId) }); return
+      }
       if (req.method === 'GET' && url.pathname === '/codex-api/thread-automations') {
         const automationsByThreadId = await listThreadHeartbeatAutomations()
         setJson(res, 200, { data: toAutomationApiMap(automationsByThreadId) })
@@ -9419,13 +9308,17 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
 
-        const index = await getThreadSearchIndex()
-        const matchedIds = Array.from(index.docsById.entries())
-          .filter(([, doc]) => isExactPhraseMatch(query, doc))
-          .slice(0, limit)
-          .map(([id]) => id)
-
-        setJson(res, 200, { data: { threadIds: matchedIds, indexedThreadCount: index.docsById.size } })
+        const controller = new AbortController()
+        const cancel = () => { if (!res.writableEnded) controller.abort() }
+        res.on('close', cancel)
+        try {
+          const data = await search.search(query, limit, controller.signal, payload?.mode === 'body' ? 'body' : 'title')
+          if (!controller.signal.aborted) setJson(res, 200, { data })
+        } catch (cause) {
+          if (!controller.signal.aborted) throw cause
+        } finally {
+          res.off('close', cancel)
+        }
         return
       }
 
@@ -9440,6 +9333,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const cache = await readThreadTitleCache()
         const next = title ? updateThreadTitleCache(cache, id, title) : removeFromThreadTitleCache(cache, id)
         await writeThreadTitleCache(next)
+        search.invalidate(id)
         setJson(res, 200, { ok: true })
         return
       }
@@ -9472,8 +9366,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'threadId, name, prompt, and rrule are required' })
           return
         }
-        const automation = await writeThreadHeartbeatAutomation({ threadId, id, name, prompt, rrule, status })
-        setJson(res, 200, { data: toAutomationApiRecord(automation) })
+        await automationEngine.readyPromise
+        if (!automationEngine.snapshot().ready) throw new Error(automationEngine.snapshot().error ?? '调度器尚未就绪')
+        const timezone = validateAutomationTimezone(typeof payload?.timezone === 'string' ? payload.timezone : automationEngine.snapshot().definitions.find((row) => row.id === id)?.timezone ?? automationEngine.timezone)
+        createAutomationSchedule(rrule, timezone, Date.now())
+        const automation = await writeThreadHeartbeatAutomation({ threadId, id, name, prompt, rrule, status, model: payload?.model, reasoningEffort: payload?.reasoningEffort, serviceTier: payload?.serviceTier, accountStorageId: payload?.accountStorageId, protected: payload?.protected, timezone })
+        await automationEngine.refresh(automation.id, timezone)
+        setJson(res, 200, { data: toAutomationApiRecord(automationEngine.decorate(automation)) })
         return
       }
 
@@ -9493,27 +9392,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'Project automation cwd must be an absolute path' })
           return
         }
-        const automation = await writeProjectCronAutomation({ projectName, id, name, prompt, rrule, status })
-        setJson(res, 200, { data: toAutomationApiRecord(automation) })
-        return
-      }
-
-      if (req.method === 'POST' && url.pathname === '/codex-api/thread-automation/run') {
-        const payload = asRecord(await readJsonBody(req))
-        const threadId = typeof payload?.threadId === 'string' ? payload.threadId.trim() : ''
-        const automationId = typeof payload?.automationId === 'string' ? payload.automationId.trim() : ''
-        if (!threadId || !automationId) {
-          setJson(res, 400, { error: 'threadId and automationId are required' })
-          return
-        }
-        const automation = await readThreadHeartbeatAutomation(threadId, automationId)
-        if (!automation) {
-          setJson(res, 404, { error: 'Automation not found for thread' })
-          return
-        }
-        await appendThreadQueuedMessage(threadId, buildHeartbeatQueuedMessage(automation))
-        backendQueueProcessor.scheduleThreadQueueDrain(threadId, 0)
-        setJson(res, 200, { data: { queued: true } })
+        await automationEngine.readyPromise
+        if (!automationEngine.snapshot().ready) throw new Error(automationEngine.snapshot().error ?? '调度器尚未就绪')
+        const timezone = validateAutomationTimezone(typeof payload?.timezone === 'string' ? payload.timezone : automationEngine.snapshot().definitions.find((row) => row.id === id)?.timezone ?? automationEngine.timezone)
+        createAutomationSchedule(rrule, timezone, Date.now())
+        const automation = await writeProjectCronAutomation({ projectName, id, name, prompt, rrule, status, model: payload?.model, reasoningEffort: payload?.reasoningEffort, serviceTier: payload?.serviceTier, accountStorageId: payload?.accountStorageId, protected: payload?.protected, timezone })
+        await automationEngine.refresh(automation.id, timezone)
+        setJson(res, 200, { data: toAutomationApiRecord(automationEngine.decorate(automation)) })
         return
       }
 
@@ -9525,6 +9410,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const removed = await deleteThreadHeartbeatAutomation(threadId, automationId)
+        await automationEngine.refresh()
         setJson(res, 200, { data: { removed } })
         return
       }
@@ -9537,6 +9423,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           return
         }
         const removed = await deleteProjectCronAutomation(projectName, automationId)
+        await automationEngine.refresh()
         setJson(res, 200, { data: { removed } })
         return
       }
@@ -9621,15 +9508,21 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     } catch (error) {
       const message = getErrorMessage(error, 'Unknown bridge error')
       setJson(res, 502, { error: message })
+    } finally {
+      releaseProviderChange?.()
     }
   }
 
+  let middlewareDisposal: Promise<void> | null = null
   middleware.dispose = () => {
-    threadSearchIndex = null
-    telegramBridge.stop()
-    terminalManager.dispose()
-    backendQueueProcessor.dispose()
-    appServer.dispose()
+    if (middlewareDisposal) return middlewareDisposal
+    unsubscribeSearch()
+    search.invalidate()
+    unsubscribeHistory()
+    history.clear()
+    sharedState.owners--
+    middlewareDisposal = sharedState.owners === 0 ? disposeSharedBridgeState(sharedState) : Promise.resolve()
+    return middlewareDisposal
   }
   middleware.subscribeNotifications = (
     listener: (value: { method: string; params: unknown; atIso: string }) => void,
@@ -9646,7 +9539,9 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         atIso: new Date().toISOString(),
       })
     })
+    const unsubscribeAutomation = automationEngine.subscribe(() => listener({ method: 'automation/changed', params: null, atIso: new Date().toISOString() }))
     return () => {
+      unsubscribeAutomation()
       unsubscribeAppServer()
       unsubscribeTerminal()
     }

@@ -42,8 +42,6 @@ if (isAndroidRuntime()) {
   run('node', [
     cliPath,
     '--no-open',
-    '--no-tunnel',
-    '--no-login',
     '--no-password',
     ...passthroughArgs,
   ])

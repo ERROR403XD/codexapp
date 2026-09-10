@@ -1,8 +1,12 @@
+import { mkdtemp, appendFile, writeFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BackendQueueProcessor,
   mergeSessionSkillInputsIntoTurns,
+  readCachedSessionSkillInputsByTurn,
   parseAutomationToml,
   sanitizeThreadTurnsInlinePayloads,
   toAutomationApiRecord,
@@ -265,7 +269,7 @@ describe('thread session skill recovery', () => {
           role: 'user',
           content: [{
             type: 'input_text',
-            text: '<skill>\n<name>browser-use:browser</name>\n<path>/Users/igor/.codex/plugins/browser/SKILL.md</path>\n---\n# Browser\n</skill>',
+            text: '<skill>\n<name>browser-use:browser</name>\n<path>/Users/example/.codex/plugins/browser/SKILL.md</path>\n---\n# Browser\n</skill>',
           }],
         },
       }),
@@ -274,7 +278,7 @@ describe('thread session skill recovery', () => {
     const merged = mergeSessionSkillInputsIntoTurns(turns, sessionLog) as typeof turns
     expect(merged[0].items[0].content).toEqual([
       { type: 'text', text: 'use a skill', text_elements: [] },
-      { type: 'skill', name: 'browser-use:browser', path: '/Users/igor/.codex/plugins/browser/SKILL.md' },
+      { type: 'skill', name: 'browser-use:browser', path: '/Users/example/.codex/plugins/browser/SKILL.md' },
     ])
   })
 
@@ -286,7 +290,7 @@ describe('thread session skill recovery', () => {
         type: 'userMessage',
         content: [
           { type: 'text', text: 'use a skill', text_elements: [] },
-          { type: 'skill', name: 'browser-use:browser', path: '/Users/igor/.codex/plugins/browser/SKILL.md' },
+          { type: 'skill', name: 'browser-use:browser', path: '/Users/example/.codex/plugins/browser/SKILL.md' },
         ],
       }],
     }]
@@ -299,7 +303,7 @@ describe('thread session skill recovery', () => {
           role: 'user',
           content: [{
             type: 'input_text',
-            text: '<skill>\n<name>browser-use:browser</name>\n<path>/Users/igor/.codex/plugins/browser/SKILL.md</path>\n</skill>',
+            text: '<skill>\n<name>browser-use:browser</name>\n<path>/Users/example/.codex/plugins/browser/SKILL.md</path>\n</skill>',
           }],
         },
       }),
@@ -338,7 +342,7 @@ describe('thread session skill recovery', () => {
           role: 'user',
           content: [{
             type: 'input_text',
-            text: '<skill>\n<name>browser-use:browser</name>\n<path>/Users/igor/.codex/plugins/browser/SKILL.md</path>\n</skill>',
+            text: '<skill>\n<name>browser-use:browser</name>\n<path>/Users/example/.codex/plugins/browser/SKILL.md</path>\n</skill>',
           }],
         },
       }),
@@ -348,7 +352,7 @@ describe('thread session skill recovery', () => {
     expect(merged[0].items[0].content).toEqual([{ type: 'text', text: 'first message', text_elements: [] }])
     expect(merged[0].items[2].content).toEqual([
       { type: 'text', text: 'second message', text_elements: [] },
-      { type: 'skill', name: 'browser-use:browser', path: '/Users/igor/.codex/plugins/browser/SKILL.md' },
+      { type: 'skill', name: 'browser-use:browser', path: '/Users/example/.codex/plugins/browser/SKILL.md' },
     ])
   })
 })
@@ -358,7 +362,7 @@ describe('backend queue scheduling', () => {
     vi.useFakeTimers()
     const processor = new BackendQueueProcessor({
       onNotification: () => () => undefined,
-    } as never)
+    } as never, { startRecovery: false })
     const processThreadQueue = vi
       .spyOn(processor as unknown as { processThreadQueue: (threadId: string) => Promise<void> }, 'processThreadQueue')
       .mockResolvedValue(undefined)
@@ -373,7 +377,7 @@ describe('backend queue scheduling', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(processThreadQueue).toHaveBeenCalledTimes(1)
 
-    processor.dispose()
+    await processor.dispose()
   })
 })
 
@@ -415,5 +419,33 @@ describe('automation TOML handling', () => {
 
     expect(automation).toBeTruthy()
     expect(toAutomationApiRecord(automation as NonNullable<typeof automation>)).not.toHaveProperty('extraTomlLines')
+  })
+})
+
+
+describe('incremental historical skill recovery', () => {
+  it('retains turn context across appends, completes partial lines, and resets on rewrite', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'skill-history-test-'))
+    const path = join(dir, 'session.jsonl')
+    const start = JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'old' } }) + '\n'
+    const skill = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<skill><name>fixture</name><path>/fixture/SKILL.md</path></skill>' }] } })
+    try {
+      await writeFile(path, start)
+      expect((await readCachedSessionSkillInputsByTurn(path)).size).toBe(0)
+      await appendFile(path, skill.slice(0, 30))
+      expect((await readCachedSessionSkillInputsByTurn(path)).size).toBe(0)
+      await appendFile(path, skill.slice(30) + '\n')
+      expect((await readCachedSessionSkillInputsByTurn(path)).get('old')).toEqual([{ name: 'fixture', path: '/fixture/SKILL.md' }])
+      await writeFile(path, start.replace('old', 'new') + skill + '\n')
+      const rewritten = await readCachedSessionSkillInputsByTurn(path)
+      expect(rewritten.has('old')).toBe(false)
+      expect(rewritten.has('new')).toBe(true)
+      await writeFile(path, start.replace('old', 'replacement') + skill + '\n')
+      const largerRewrite = await readCachedSessionSkillInputsByTurn(path)
+      expect(largerRewrite.has('new')).toBe(false)
+      expect(largerRewrite.has('replacement')).toBe(true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -32,7 +32,7 @@ describe('normalizeThreadMessagesV2', () => {
       id: 'user-1',
       content: [
         { type: 'text', text: 'Use the browser skill', text_elements: [] },
-        { type: 'skill', name: 'browser-use:browser', path: '/Users/igor/.codex/skills/browser/SKILL.md' },
+        { type: 'skill', name: 'browser-use:browser', path: '/Users/example/.codex/skills/browser/SKILL.md' },
       ],
     }]))
 
@@ -41,7 +41,7 @@ describe('normalizeThreadMessagesV2', () => {
       id: 'user-1',
       role: 'user',
       text: 'Use the browser skill',
-      skills: [{ name: 'browser-use:browser', path: '/Users/igor/.codex/skills/browser/SKILL.md' }],
+      skills: [{ name: 'browser-use:browser', path: '/Users/example/.codex/skills/browser/SKILL.md' }],
     })
   })
 
@@ -50,7 +50,7 @@ describe('normalizeThreadMessagesV2', () => {
       type: 'userMessage',
       id: 'user-2',
       content: [
-        { type: 'skill', name: 'composio-cli', path: '/Users/igor/.codex/skills/composio-cli/SKILL.md' },
+        { type: 'skill', name: 'composio-cli', path: '/Users/example/.codex/skills/composio-cli/SKILL.md' },
       ],
     }]))
 
@@ -59,7 +59,7 @@ describe('normalizeThreadMessagesV2', () => {
       id: 'user-2',
       role: 'user',
       text: '',
-      skills: [{ name: 'composio-cli', path: '/Users/igor/.codex/skills/composio-cli/SKILL.md' }],
+      skills: [{ name: 'composio-cli', path: '/Users/example/.codex/skills/composio-cli/SKILL.md' }],
     })
     expect(messages[0].isUnhandled).toBeUndefined()
   })
@@ -182,5 +182,17 @@ describe('readThreadInProgressFromResponse', () => {
     ;(response.thread as unknown as { status: { type: string } }).status = { type: 'active' }
 
     expect(readThreadInProgressFromResponse(response)).toBe(true)
+  })
+})
+
+
+describe('async question persistence', () => {
+  it('retains structured questions and delivery on an otherwise empty assistant message', () => {
+    const payload = threadReadResponseWithContent([{
+      type: 'agentMessage', id: 'async-question', text: '', delivery: 'async',
+      questions: [{ title: 'Scope?', options: ['UI', 'All'] }, { title: 'Notes?' }],
+    } as unknown as ThreadReadResponse['thread']['turns'][number]['items'][number]])
+    const [message] = normalizeThreadMessagesV2(payload)
+    expect(message).toMatchObject({ id: 'async-question', turnId: 'turn-1', delivery: 'async', questions: [{ title: 'Scope?', options: ['UI', 'All'] }, { title: 'Notes?', options: [] }] })
   })
 })

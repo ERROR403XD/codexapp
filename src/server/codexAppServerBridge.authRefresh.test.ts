@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { refreshChatgptAuthTokensForExternalAuth } from './codexAppServerBridge'
+import { AccountAuthStore } from './accountAuthStore'
 
 const originalCodexHome = process.env.CODEX_HOME
 const originalRefreshUrlOverride = process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE
@@ -48,17 +49,24 @@ describe('ChatGPT auth token refresh', () => {
     const codexHome = await createCodexHome({
       auth_mode: 'chatgpt',
       tokens: {
-        access_token: 'expired-access-token',
+        access_token: unsignedJwt({
+          'https://api.openai.com/auth': { chatgpt_account_id: 'acct-old', user_id: 'user-old' },
+        }),
         refresh_token: 'refresh-old',
         id_token: 'id-old',
         account_id: 'acct-old',
       },
     })
+    const initialRaw = await readFile(join(codexHome, 'auth.json'), 'utf8')
+    const authStore = new AccountAuthStore(codexHome)
+    await authStore.upsertCredential(initialRaw, { activate: true })
+    const initialRevision = (await authStore.readState()).accounts[0]?.credentialRevision ?? 0
     process.env.CODEX_REFRESH_TOKEN_URL_OVERRIDE = 'https://example.test/oauth/token'
     const accessToken = unsignedJwt({
       'https://api.openai.com/auth': {
-        chatgpt_account_id: 'acct-new',
+        chatgpt_account_id: 'acct-old',
         chatgpt_plan_type: 'pro',
+        user_id: 'user-old',
       },
     })
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
@@ -84,7 +92,7 @@ describe('ChatGPT auth token refresh', () => {
     expect(body.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann')
     expect(result).toEqual({
       accessToken,
-      chatgptAccountId: 'acct-new',
+      chatgptAccountId: 'acct-old',
       chatgptPlanType: 'pro',
     })
 
@@ -98,22 +106,28 @@ describe('ChatGPT auth token refresh', () => {
     expect(updatedAuth.tokens?.access_token).toBe(accessToken)
     expect(updatedAuth.tokens?.refresh_token).toBe('refresh-new')
     expect(updatedAuth.tokens?.id_token).toBe('id-new')
-    expect(updatedAuth.tokens?.account_id).toBe('acct-new')
+    expect(updatedAuth.tokens?.account_id).toBe('acct-old')
+    const profile = (await authStore.readState()).accounts[0]
+    expect(profile?.credentialRevision).toBe(initialRevision + 1)
   })
 
   it('asks for sign-in when auth.json has no ChatGPT refresh token', async () => {
-    await createCodexHome({
+    const codexHome = await createCodexHome({
       auth_mode: 'chatgpt',
       tokens: {
-        access_token: 'expired-access-token',
+        access_token: unsignedJwt({
+          'https://api.openai.com/auth': { chatgpt_account_id: 'acct-old', user_id: 'user-old' },
+        }),
         account_id: 'acct-old',
       },
     })
+    const raw = await readFile(join(codexHome, 'auth.json'), 'utf8')
+    await new AccountAuthStore(codexHome).upsertCredential(raw, { activate: true })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(refreshChatgptAuthTokensForExternalAuth()).rejects.toThrow(
-      'No ChatGPT refresh token is available. Please sign in again.',
+      'The account credential must be renewed from the account panel.',
     )
     expect(fetchMock).not.toHaveBeenCalled()
   })

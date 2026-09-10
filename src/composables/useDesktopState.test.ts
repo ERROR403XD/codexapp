@@ -1,3 +1,5 @@
+import { normalizeModelCapability } from '../modelCapabilities'
+import { applyThreadQueueOperation, type ThreadQueueState } from '../threadQueue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildWorkspaceRootsProjectOrderState,
@@ -5,7 +7,6 @@ import {
   filterGroupsByWorkspaceRoots,
   findAdjacentThreadId,
   removeThreadFromGroups,
-  isThreadUnreadByLastRead,
   useDesktopState,
 } from './useDesktopState'
 import type { UiProjectGroup } from '../types/codex'
@@ -14,6 +15,9 @@ import type { WorkspaceRootsState } from '../api/codexGateway'
 const gatewayMocks = vi.hoisted(() => ({
   archiveThread: vi.fn(),
   forkThread: vi.fn(),
+  forkThreadAtTurn: vi.fn(),
+  getThreadTurnMessages: vi.fn(),
+  getOlderThreadMessages: vi.fn(),
   getAccountRateLimits: vi.fn(),
   getAvailableCollaborationModes: vi.fn(),
   getAvailableModelIds: vi.fn(),
@@ -34,7 +38,7 @@ const gatewayMocks = vi.hoisted(() => ({
   revertThreadFileChanges: vi.fn(),
   rollbackThread: vi.fn(),
   setCodexSpeedMode: vi.fn(),
-  setThreadQueueState: vi.fn(),
+  mutateThreadQueueState: vi.fn(),
   setWorkspaceRootsState: vi.fn(),
   startThread: vi.fn(),
   startThreadTurn: vi.fn(),
@@ -43,6 +47,8 @@ const gatewayMocks = vi.hoisted(() => ({
 
 vi.mock('../api/codexGateway', () => ({
   ...gatewayMocks,
+  invalidateModelCatalog: vi.fn(),
+  getAvailableModels: async (options: unknown) => (await gatewayMocks.getAvailableModelIds(options) || []).map((id: string) => normalizeModelCapability(id)! ),
   getBackgroundThreadListLimit: vi.fn(() => 100),
   pickCodexRateLimitSnapshot: vi.fn(() => null),
 }))
@@ -170,19 +176,19 @@ describe('filterGroupsByWorkspaceRoots', () => {
     const groups: UiProjectGroup[] = [
       {
         projectName: 'TestChat',
-        threads: [thread('testchat-chat', '/Users/igor/temp/TestChat')],
+        threads: [thread('testchat-chat', '/Users/example/temp/TestChat')],
       },
     ]
     const rootsState: WorkspaceRootsState = {
-      order: ['/Users/igor/Documents/New project 2/TestChat', '/Users/igor/temp/TestChat'],
+      order: ['/Users/example/Documents/New project 2/TestChat', '/Users/example/temp/TestChat'],
       labels: {},
-      active: ['/Users/igor/Documents/New project 2/TestChat', '/Users/igor/temp/TestChat'],
-      projectOrder: ['/Users/igor/Documents/New project 2/TestChat', '/Users/igor/temp/TestChat'],
+      active: ['/Users/example/Documents/New project 2/TestChat', '/Users/example/temp/TestChat'],
+      projectOrder: ['/Users/example/Documents/New project 2/TestChat', '/Users/example/temp/TestChat'],
     }
 
     expect(filterGroupsByWorkspaceRoots(groups, rootsState).map((group) => [group.projectName, group.threads.length])).toEqual([
-      ['/Users/igor/Documents/New project 2/TestChat', 0],
-      ['/Users/igor/temp/TestChat', 1],
+      ['/Users/example/Documents/New project 2/TestChat', 0],
+      ['/Users/example/temp/TestChat', 1],
     ])
   })
 
@@ -212,16 +218,16 @@ describe('filterGroupsByWorkspaceRoots', () => {
       {
         projectName: 'codex-web-local',
         threads: [
-          thread('main-chat', '/Users/igor/Git-projects/codex-web-local'),
-          thread('worktree-chat', '/Users/igor/.codex/worktrees/53e7/codex-web-local', { hasWorktree: true }),
+          thread('main-chat', '/Users/example/Git-projects/codex-web-local'),
+          thread('worktree-chat', '/Users/example/.codex/worktrees/53e7/codex-web-local', { hasWorktree: true }),
         ],
       },
     ]
     const rootsState: WorkspaceRootsState = {
-      order: ['/Users/igor/Git-projects/codex-web-local'],
+      order: ['/Users/example/Git-projects/codex-web-local'],
       labels: {},
-      active: ['/Users/igor/Git-projects/codex-web-local'],
-      projectOrder: ['/Users/igor/Git-projects/codex-web-local'],
+      active: ['/Users/example/Git-projects/codex-web-local'],
+      projectOrder: ['/Users/example/Git-projects/codex-web-local'],
     }
 
     expect(filterGroupsByWorkspaceRoots(groups, rootsState).map((group) => [group.projectName, group.threads.map((row) => row.id)])).toEqual([
@@ -234,27 +240,27 @@ describe('filterGroupsByWorkspaceRoots', () => {
       {
         projectName: 'codex-web-local',
         threads: [
-          thread('main-chat', '/Users/igor/Git-projects/codex-web-local'),
-          thread('registered-worktree-chat', '/Users/igor/.codex/worktrees/a77f/codex-web-local', { hasWorktree: true }),
-          thread('unregistered-worktree-chat', '/Users/igor/.codex/worktrees/53e7/codex-web-local', { hasWorktree: true }),
+          thread('main-chat', '/Users/example/Git-projects/codex-web-local'),
+          thread('registered-worktree-chat', '/Users/example/.codex/worktrees/a77f/codex-web-local', { hasWorktree: true }),
+          thread('unregistered-worktree-chat', '/Users/example/.codex/worktrees/53e7/codex-web-local', { hasWorktree: true }),
         ],
       },
     ]
     const rootsState: WorkspaceRootsState = {
       order: [
-        '/Users/igor/Git-projects/codex-web-local',
-        '/Users/igor/.codex/worktrees/a77f/codex-web-local',
+        '/Users/example/Git-projects/codex-web-local',
+        '/Users/example/.codex/worktrees/a77f/codex-web-local',
       ],
       labels: {
-        '/Users/igor/.codex/worktrees/a77f/codex-web-local': 'codex-web-local2',
+        '/Users/example/.codex/worktrees/a77f/codex-web-local': 'codex-web-local2',
       },
-      active: ['/Users/igor/Git-projects/codex-web-local'],
-      projectOrder: ['/Users/igor/Git-projects/codex-web-local'],
+      active: ['/Users/example/Git-projects/codex-web-local'],
+      projectOrder: ['/Users/example/Git-projects/codex-web-local'],
     }
 
     expect(filterGroupsByWorkspaceRoots(groups, rootsState).map((group) => [group.projectName, group.threads.map((row) => row.id)])).toEqual([
-      ['/Users/igor/Git-projects/codex-web-local', ['main-chat', 'unregistered-worktree-chat']],
-      ['/Users/igor/.codex/worktrees/a77f/codex-web-local', ['registered-worktree-chat']],
+      ['/Users/example/Git-projects/codex-web-local', ['main-chat', 'unregistered-worktree-chat']],
+      ['/Users/example/.codex/worktrees/a77f/codex-web-local', ['registered-worktree-chat']],
     ])
   })
 
@@ -263,20 +269,20 @@ describe('filterGroupsByWorkspaceRoots', () => {
       {
         projectName: 'codex-web-local',
         threads: [
-          thread('main-chat', '/Users/igor/Git-projects/codex-web-local'),
+          thread('main-chat', '/Users/example/Git-projects/codex-web-local'),
           thread('other-git-worktree-chat', '/tmp/other/.git/worktrees/codex-web-local', { hasWorktree: true }),
         ],
       },
     ]
     const rootsState: WorkspaceRootsState = {
-      order: ['/Users/igor/Git-projects/codex-web-local'],
+      order: ['/Users/example/Git-projects/codex-web-local'],
       labels: {},
-      active: ['/Users/igor/Git-projects/codex-web-local'],
-      projectOrder: ['/Users/igor/Git-projects/codex-web-local'],
+      active: ['/Users/example/Git-projects/codex-web-local'],
+      projectOrder: ['/Users/example/Git-projects/codex-web-local'],
     }
 
     expect(filterGroupsByWorkspaceRoots(groups, rootsState).map((group) => [group.projectName, group.threads.map((row) => row.id)])).toEqual([
-      ['/Users/igor/Git-projects/codex-web-local', ['main-chat']],
+      ['/Users/example/Git-projects/codex-web-local', ['main-chat']],
     ])
   })
 })
@@ -366,28 +372,6 @@ describe('workspace roots project persistence helpers', () => {
       active: ['/tmp/local-project'],
       projectOrder: ['remote-project-id', '/tmp/local-project'],
     })
-  })
-})
-
-describe('thread unread state helpers', () => {
-  const cutoffIso = '2026-05-01T12:00:00.000Z'
-
-  it('uses the initialization cutoff when a thread has no read state', () => {
-    expect(isThreadUnreadByLastRead('2026-05-01T11:59:59.000Z', undefined, cutoffIso)).toBe(false)
-    expect(isThreadUnreadByLastRead('2026-05-01T12:00:01.000Z', undefined, cutoffIso)).toBe(true)
-  })
-
-  it('uses per-thread read state instead of the global cutoff after a thread is read', () => {
-    expect(isThreadUnreadByLastRead(
-      '2026-05-01T12:30:00.000Z',
-      '2026-05-01T12:45:00.000Z',
-      cutoffIso,
-    )).toBe(false)
-    expect(isThreadUnreadByLastRead(
-      '2026-05-01T12:50:00.000Z',
-      '2026-05-01T12:45:00.000Z',
-      cutoffIso,
-    )).toBe(true)
   })
 })
 
@@ -528,7 +512,7 @@ describe('startup request deduplication', () => {
       model: 'gpt-5.5',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.5'])
 
@@ -559,7 +543,7 @@ describe('startup request deduplication', () => {
       model: 'gpt-5.5',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.5'])
 
@@ -756,7 +740,7 @@ describe('provider model selection', () => {
       model: 'big-pickle',
       providerId: 'opencode-zen',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue([
       'big-pickle',
@@ -799,7 +783,7 @@ describe('provider model selection', () => {
       model: 'big-pickle',
       providerId: 'opencode-zen',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue([
       'big-pickle',
@@ -836,7 +820,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.5',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue([
       'gpt-5.5',
@@ -868,7 +852,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.5',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue([
       'gpt-5.5',
@@ -903,7 +887,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.4-mini',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockImplementation(async (options?: { providerId?: string }) => {
       if (options?.providerId === 'opencode-zen') {
@@ -959,7 +943,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.4-mini',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockImplementation(async (options?: { providerId?: string }) => {
       if (options?.providerId === 'opencode-zen') {
@@ -1002,7 +986,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.5',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.5', 'gpt-5.4-mini'])
     gatewayMocks.startThread.mockResolvedValue({
@@ -1042,6 +1026,8 @@ describe('provider model selection', () => {
       undefined,
       [],
       'default',
+      null,
+      'immediate', expect.objectContaining({ id: expect.any(String) }),
     )
     expect(state.readModelIdForThread('codex-thread')).toBe('gpt-5.5')
     expect(state.messages.value.some((message) => (
@@ -1082,7 +1068,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.4-mini',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.5', 'gpt-5.4-mini'])
     gatewayMocks.startThread.mockResolvedValue({
@@ -1097,6 +1083,8 @@ describe('provider model selection', () => {
       messages: [
         {
           id: 'user-1',
+          turnId: 'turn-1',
+          userMessageOrdinal: 0,
           role: 'user',
           text: 'hi',
           messageType: 'userMessage',
@@ -1149,7 +1137,7 @@ describe('provider model selection', () => {
       model: 'gpt-5.5',
       providerId: '',
       reasoningEffort: 'medium',
-      speedMode: 'standard',
+      speedMode: '',
     })
     gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.5', 'gpt-5.4-mini'])
     gatewayMocks.resumeThread.mockRejectedValue(new Error('thread not found'))
@@ -1194,4 +1182,369 @@ describe('findAdjacentThreadId', () => {
   it('returns no fallback when there is no adjacent thread', () => {
     expect(findAdjacentThreadId([thread('selected-thread', '/tmp/project')], 'selected-thread')).toBe('')
   })
+})
+
+
+describe('durable queue lifecycle', () => {
+  async function busyState() {
+    installTestWindow()
+    gatewayMocks.resumeThread.mockResolvedValue(null)
+    gatewayMocks.getThreadDetail.mockResolvedValue({ messages: [], inProgress: true, activeTurnId: 'turn-queue', turnIndexByTurnId: {}, hasMoreOlder: false })
+    gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+    gatewayMocks.subscribeCodexNotifications.mockReturnValue(() => {})
+    const state = useDesktopState()
+    state.primeSelectedThread('queue-thread')
+    await state.loadMessages('queue-thread')
+    return state
+  }
+
+  it('keeps saved queues when polling is stopped and restarted for account refresh', async () => {
+    let saved: ThreadQueueState = {}
+    gatewayMocks.mutateThreadQueueState.mockImplementation(async operation => {
+      const result = applyThreadQueueOperation(saved, operation)
+      saved = result.state
+      return result
+    })
+    gatewayMocks.getThreadQueueState.mockImplementation(async () => saved)
+    const state = await busyState()
+    await state.sendMessageToSelectedThread('keep after account refresh')
+    expect(state.selectedThreadQueuedMessages.value).toHaveLength(1)
+    const savedId = state.selectedThreadQueuedMessages.value[0]!.id
+    state.stopPolling()
+    state.startPolling()
+    expect(state.selectedThreadQueuedMessages.value[0]?.id).toBe(savedId)
+    expect(saved['queue-thread']?.[0]?.id).toBe(savedId)
+    expect(gatewayMocks.mutateThreadQueueState).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.mutateThreadQueueState.mock.calls[0]![0].type).toBe('add')
+    state.stopPolling()
+  })
+
+  it('reports failed saves and does not claim an unsaved message was queued', async () => {
+    gatewayMocks.mutateThreadQueueState.mockRejectedValueOnce(new Error('fixture save failed'))
+    const state = await busyState()
+    await expect(state.sendMessageToSelectedThread('retain draft')).rejects.toThrow('fixture save failed')
+    expect(state.error.value).toBe('fixture save failed')
+    expect(state.selectedThreadQueueError.value).toBe('fixture save failed')
+    state.primeSelectedThread('another-thread')
+    expect(state.selectedThreadQueueError.value).toBe('')
+    state.primeSelectedThread('queue-thread')
+    expect(state.selectedThreadQueueError.value).toBe('fixture save failed')
+    expect(state.selectedThreadQueuedMessages.value).toEqual([])
+  })
+})
+
+
+describe('local model setting isolation', () => {
+  it('keeps model settings separate and never writes global Codex Fast config', async () => {
+    installTestWindow()
+    const state = useDesktopState()
+    state.setSelectedModelId('model-b')
+    state.selectedSpeedMode.value = 'other-tier'
+    state.setSelectedReasoningEffort('low')
+    state.setSelectedModelId('model-a')
+    state.setSelectedReasoningEffort('ultra')
+    const writing = state.updateSelectedSpeedMode('priority')
+    state.setSelectedModelId('model-b')
+    await writing
+    expect(gatewayMocks.setCodexSpeedMode).not.toHaveBeenCalled()
+    expect(state.selectedSpeedMode.value).toBe('other-tier')
+    expect(state.selectedReasoningEffort.value).toBe('low')
+    state.setSelectedModelId('model-a')
+    expect(state.selectedSpeedMode.value).toBe('priority')
+    expect(state.selectedReasoningEffort.value).toBe('ultra')
+  })
+})
+
+
+describe('runtime reconnect capabilities', () => {
+  it('refreshes metadata on a later ready event without duplicating the initial read', async () => {
+    installTestWindow()
+    gatewayMocks.getCurrentModelConfig.mockResolvedValue({ model: 'gpt-5.5', providerId: '', reasoningEffort: 'low', speedMode: '' })
+    gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.5'])
+    gatewayMocks.getAccountRateLimits.mockResolvedValue(null)
+    gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+    gatewayMocks.getThreadGroupsPage.mockResolvedValue({ groups: [], nextCursor: null })
+    let callback!: (event: { method: string; params: unknown; atIso: string }) => void
+    gatewayMocks.subscribeCodexNotifications.mockImplementationOnce(fn => { callback = fn; return () => {} })
+    const state = useDesktopState()
+    state.startPolling()
+    const baseline = gatewayMocks.getAvailableModelIds.mock.calls.length
+    callback({ method: 'ready', params: {}, atIso: '' })
+    await Promise.resolve()
+    expect(gatewayMocks.getAvailableModelIds).toHaveBeenCalledTimes(baseline)
+    callback({ method: 'ready', params: {}, atIso: '' })
+    await vi.waitFor(() => expect(gatewayMocks.getAvailableModelIds).toHaveBeenCalledTimes(baseline + 1))
+    state.stopPolling()
+  })
+})
+
+
+describe('explicit question answers', () => {
+  it('does not intercept ordinary text or steer as an answer to a pending question', async () => {
+    installTestWindow()
+    let notify: (event: { method: string; params?: unknown }) => void = () => {}
+    gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+    gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+    gatewayMocks.resumeThread.mockResolvedValue({ messages: [], inProgress: false, activeTurnId: '', turnIndexByTurnId: {} })
+    gatewayMocks.getThreadDetail.mockResolvedValue({ messages: [], inProgress: false, activeTurnId: '', turnIndexByTurnId: {} })
+    gatewayMocks.startThreadTurn.mockResolvedValue('t-new')
+    const state = useDesktopState()
+    state.primeSelectedThread('thread-question')
+    await state.loadMessages('thread-question')
+    state.startPolling()
+    notify({ method: 'server/request', params: { id: 21, method: 'item/tool/requestUserInput', params: { threadId: 'thread-question', turnId: 't', itemId: 'q', isBlocking: false, questions: [{ id: 'scope', question: 'Scope?' }] } } })
+    await state.sendMessageToSelectedThread('ordinary text', [], [], 'steer')
+    expect(gatewayMocks.replyToServerRequest).not.toHaveBeenCalled()
+    expect(gatewayMocks.startThreadTurn).toHaveBeenCalledWith('thread-question', 'ordinary text', [], undefined, undefined, undefined, [], 'default', null, 'immediate', expect.objectContaining({ id: expect.any(String) }))
+    state.stopPolling()
+  })
+})
+
+
+it('does not lose a live question when an earlier pending snapshot arrives afterward', async () => {
+  installTestWindow()
+  let notify: (event: { method: string; params?: unknown }) => void = () => {}
+  let resolveSnapshot: (rows: unknown[]) => void = () => {}
+  gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+  gatewayMocks.getPendingServerRequests.mockImplementation(() => new Promise(resolve => { resolveSnapshot = resolve }))
+  const state = useDesktopState()
+  state.primeSelectedThread('question-thread')
+  state.startPolling()
+  notify({ method: 'server/request', params: { id: 901, method: 'item/tool/requestUserInput', params: { threadId: 'question-thread', turnId: 'turn', itemId: 'item', isBlocking: false, questions: [{ id: 'q', question: 'Scope?' }] } } })
+  resolveSnapshot([])
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(state.selectedThreadServerRequests.value.map(request => request.id)).toEqual([901])
+  state.stopPolling()
+})
+
+
+describe('native history integration', () => {
+  it('keeps conversation history when workspace rollback is rejected', async () => {
+    installTestWindow()
+    gatewayMocks.getThreadGroupsPage.mockResolvedValue({ groups: [{ projectName: 'fixture', threads: [thread('paged', '/tmp/fixture')] }], nextCursor: null })
+    gatewayMocks.resumeThread.mockResolvedValue({ messages: [{ id: 'message', turnId: 'turn', turnIndex: 0, role: 'user', text: 'preserve this' }], inProgress: false, activeTurnId: '', turnIndexByTurnId: { turn: 0 }, hasMoreOlder: false })
+    gatewayMocks.revertThreadFileChanges.mockResolvedValue({ reverted: 0, errors: ['此会话不支持撤回历史。'] })
+    const state = useDesktopState()
+    state.primeSelectedThread('paged')
+    await state.refreshAll()
+    await state.loadMessages('paged')
+    expect(await state.rollbackSelectedThread('turn')).toBe(false)
+    expect(gatewayMocks.revertThreadFileChanges).toHaveBeenCalledExactlyOnceWith('paged', 'turn', '/tmp/fixture')
+    expect(gatewayMocks.rollbackThread).not.toHaveBeenCalled()
+    expect(state.messages.value.some(message => message.text === 'preserve this')).toBe(true)
+    expect(state.error.value).toContain('不支持撤回历史')
+  })
+
+  it('retains older pages and empty turns, and passes the cursor unchanged', async () => {
+    installTestWindow()
+    const msg = (id: string) => ({ id, turnId: id, turnIndex: 0, text: id, role: 'assistant' as const })
+    gatewayMocks.resumeThread.mockResolvedValue({ messages: [msg('latest')], inProgress: false, activeTurnId: '', turnIndexByTurnId: { latest: 0 }, hasMoreOlder: true, historyPosition: { source: 'native', nextCursor: 'opaque/+' } })
+    gatewayMocks.getOlderThreadMessages.mockResolvedValue({ messages: [msg('older')], inProgress: false, activeTurnId: '', turnIndexByTurnId: { older: 0, empty: 1 }, hasMoreOlder: true, historyPosition: { source: 'native', nextCursor: 'opaque-next' } })
+    const state = useDesktopState()
+    state.primeSelectedThread('paged')
+    await state.loadMessages('paged')
+    await state.loadOlderMessages('paged')
+    expect(gatewayMocks.getOlderThreadMessages).toHaveBeenLastCalledWith('paged', 'latest', undefined, { source: 'native', nextCursor: 'opaque/+' })
+    expect(state.messages.value.filter(message => message.turnId).map(message => [message.turnId, message.turnIndex])).toEqual([['older', 0], ['latest', 2]])
+    gatewayMocks.getOlderThreadMessages.mockResolvedValue({ messages: [], turnIndexByTurnId: { firstEmpty: 0 }, hasMoreOlder: false, historyPosition: { source: 'native', nextCursor: null } })
+    await state.loadOlderMessages('paged')
+    expect(gatewayMocks.getOlderThreadMessages).toHaveBeenLastCalledWith('paged', 'older', undefined, { source: 'native', nextCursor: 'opaque-next' })
+    expect(state.messages.value.filter(message => message.turnId).map(message => [message.turnId, message.turnIndex])).toEqual([['older', 1], ['latest', 3]])
+    expect(state.hasMoreOlderMessages.value).toBe(false)
+  })
+
+  it('reads a historical question by turn ID when it is outside the latest page', async () => {
+    installTestWindow()
+    const question = { id: 'q-old', turnId: 'old', turnIndex: 0, role: 'assistant', text: 'choose', questions: [{ title: 'Fruit?', options: ['Pear'] }], questionOrdinal: 0 }
+    gatewayMocks.resumeThread.mockResolvedValue({ messages: [question], inProgress: false, activeTurnId: '', turnIndexByTurnId: { old: 0 }, hasMoreOlder: false })
+    gatewayMocks.getThreadDetail.mockResolvedValue({ messages: [], inProgress: false, activeTurnId: '', turnIndexByTurnId: {} })
+    gatewayMocks.getThreadTurnMessages.mockResolvedValue([question])
+    gatewayMocks.startThreadTurn.mockResolvedValue('new')
+    const state = useDesktopState()
+    state.primeSelectedThread('old-question')
+    await state.loadMessages('old-question')
+    await state.answerAsyncQuestions({ threadId: 'old-question', turnId: 'old', itemId: 'q-old', questionOrdinal: 0, answers: ['Pear'] })
+    expect(gatewayMocks.getThreadTurnMessages).toHaveBeenCalledExactlyOnceWith('old-question', 'old')
+    expect(gatewayMocks.startThreadTurn).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.startThreadTurn.mock.calls[0][1]).toContain('codexapp:question-reply')
+  })
+})
+
+it('refreshes a fast completed turn even when the thread timestamp and recent snapshot are unchanged', async () => {
+  installTestWindow()
+  let notify: (notification: { method: string; params: unknown }) => void = () => {}
+  gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+  gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+  gatewayMocks.resumeThread.mockResolvedValue(null)
+  const detail = { messages: [{ id: 'old', role: 'assistant', text: 'old' }], inProgress: false, activeTurnId: '', turnIndexByTurnId: {}, hasMoreOlder: false }
+  gatewayMocks.getThreadDetail.mockResolvedValue(detail)
+  const state = useDesktopState()
+  state.primeSelectedThread('fast')
+  await state.loadMessages('fast')
+  state.startPolling()
+  gatewayMocks.getThreadDetail.mockResolvedValue({ ...detail, messages: [...detail.messages, { id: 'new', role: 'assistant', text: 'fast result' }] })
+  notify({ method: 'turn/completed', params: { threadId: 'fast', turn: { id: 'new-turn', status: 'completed' } } })
+  await state.loadMessages('fast')
+  expect(state.messages.value.some(message => message.text === 'fast result')).toBe(true)
+  expect(gatewayMocks.getThreadDetail).toHaveBeenCalledTimes(2)
+})
+
+it('does not let an in-flight older history snapshot swallow a newer completion', async () => {
+  installTestWindow()
+  let notify: (notification: { method: string; params: unknown }) => void = () => {}
+  gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+  gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+  gatewayMocks.resumeThread.mockResolvedValue(null)
+  let finish!: (value: unknown) => void
+  gatewayMocks.getThreadDetail.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const state = useDesktopState()
+  state.primeSelectedThread('race')
+  state.startPolling()
+  const pending = state.loadMessages('race')
+  await Promise.resolve()
+  await Promise.resolve()
+  notify({ method: 'turn/completed', params: { threadId: 'race', turn: { id: 'new-turn', status: 'completed' } } })
+  finish({ messages: [], inProgress: true, activeTurnId: 'old-turn', turnIndexByTurnId: {}, hasMoreOlder: false })
+  await pending
+  gatewayMocks.getThreadDetail.mockResolvedValue({ messages: [{ id: 'new', role: 'assistant', text: 'after old read' }], inProgress: false, activeTurnId: '', turnIndexByTurnId: {}, hasMoreOlder: false })
+  await state.loadMessages('race')
+  expect(state.messages.value.some(message => message.text === 'after old read')).toBe(true)
+  expect(gatewayMocks.getThreadDetail).toHaveBeenCalledTimes(2)
+})
+
+ describe('0.2.11 realtime regression', () => {
+  function setup() {
+    installTestWindow()
+    let notify: (notification: { method: string; params: unknown }) => void = () => {}
+    gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+    gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+    gatewayMocks.getThreadGroupsPage.mockResolvedValue({ groups: [{ projectName: 'p', threads: [thread('live', '/p'), thread('other', '/p')] }], nextCursor: null })
+    const empty = { messages: [], inProgress: true, activeTurnId: 't1', turnIndexByTurnId: { t1: 0 }, hasMoreOlder: false }
+    gatewayMocks.resumeThread.mockResolvedValue(empty)
+    gatewayMocks.getThreadDetail.mockResolvedValue(empty)
+    gatewayMocks.startThreadTurn.mockResolvedValue('t1')
+    const state = useDesktopState()
+    state.primeSelectedThread('live')
+    state.startPolling()
+    return { state, notify }
+  }
+
+  it('shows confirmed steering immediately, replaces it once, and preserves repeated equal steering text', async () => {
+    const { state, notify } = setup()
+    await state.loadMessages('live')
+    await state.sendMessageToSelectedThread('keep going', [], [], 'steer')
+    expect(gatewayMocks.startThreadTurn.mock.calls.at(-1)?.[9]).toBe('steer')
+    expect(state.messages.value.filter(row => row.text === 'keep going')).toHaveLength(1)
+    const firstId = gatewayMocks.startThreadTurn.mock.calls.at(-1)?.[10].id
+    const event = { method: 'item/completed', params: { threadId: 'live', turnId: 't1', item: { id: 'user-native-1', type: 'userMessage', clientUserMessageId: firstId, content: [{ type: 'text', text: 'keep going' }] } } }
+    notify(event)
+    notify(event)
+    expect(state.messages.value.filter(row => row.text === 'keep going')).toHaveLength(1)
+    await state.sendMessageToSelectedThread('keep going', [], [], 'steer')
+    expect(state.messages.value.filter(row => row.text === 'keep going')).toHaveLength(2)
+    state.stopPolling()
+  })
+
+  it('shows queue-to-steer delivery before a late history snapshot', async () => {
+    const { state } = setup()
+    const message = { id: 'queue-1', text: 'queued steer', imageUrls: [], skills: [], fileAttachments: [], delivery: { status: 'queued', revision: 1 } }
+    gatewayMocks.getThreadQueueState.mockResolvedValue({ live: [message] })
+    await state.loadMessages('live')
+    await state.refreshQueueState()
+    gatewayMocks.mutateThreadQueueState.mockResolvedValue({ state: {}, delivered: { id: 'queue-1', turnId: 't1' } })
+    await state.steerQueuedMessage('queue-1')
+    expect(state.messages.value.filter(row => row.text === 'queued steer')).toHaveLength(1)
+    state.stopPolling()
+  })
+
+  it('keeps a new running turn when an older completion is replayed and ignores an ended turn start', async () => {
+    const { state, notify } = setup()
+    await state.refreshAll({ includeSelectedThreadMessages: false })
+    state.primeSelectedThread('other')
+    notify({ method: 'turn/started', params: { threadId: 'live', turn: { id: 't1' } } })
+    notify({ method: 'turn/started', params: { threadId: 'live', turn: { id: 't2' } } })
+    notify({ method: 'turn/completed', params: { threadId: 'live', turn: { id: 't1' } } })
+    const row = () => state.projectGroups.value.flatMap(group => group.threads).find(row => row.id === 'live')!
+    expect(row().inProgress).toBe(true)
+    expect(row().unread).toBe(false)
+    notify({ method: 'turn/completed', params: { threadId: 'live', turn: { id: 't2' } } })
+    expect(row().inProgress).toBe(false)
+    expect(row().unread).toBe(false)
+    notify({ method: 'codexapp/completions/changed', params: { threadId: 'live', token: 't2' } })
+    expect(row().unread).toBe(true)
+    notify({ method: 'turn/started', params: { threadId: 'live', turn: { id: 't2' } } })
+    expect(row().inProgress).toBe(false)
+    state.primeSelectedThread('live')
+    expect(row().unread).toBe(false)
+    state.stopPolling()
+  })
+
+  it('does not let a delayed list snapshot overwrite a newer running notification', async () => {
+    const { state, notify } = setup()
+    let release!: (value: unknown) => void
+    gatewayMocks.getThreadGroupsPage.mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    const calls = gatewayMocks.getThreadGroupsPage.mock.calls.length
+    const loading = state.refreshAll({ includeSelectedThreadMessages: false })
+    await vi.waitFor(() => expect(gatewayMocks.getThreadGroupsPage.mock.calls.length).toBeGreaterThan(calls))
+    notify({ method: 'turn/started', params: { threadId: 'live', turn: { id: 'new' } } })
+    release({ groups: [{ projectName: 'p', threads: [thread('live', '/p')] }], nextCursor: null })
+    await loading
+    expect(state.projectGroups.value.flatMap(group => group.threads)[0].inProgress).toBe(true)
+    state.stopPolling()
+  })
+})
+
+it('initializes saved defaults on explicit composer reentry without overwriting later manual choices', () => {
+  installTestWindow()
+  const state = useDesktopState()
+  state.primeSelectedThread('')
+  state.setSelectedModelId('legacy-model')
+  state.configureWebDefaults({ model: 'new-model', provider: 'codex', effort: 'low', tier: 'priority' }, true)
+  expect(state.selectedModelId.value).toBe('legacy-model')
+  state.initializeWebConversation('')
+  expect(state.selectedModelId.value).toBe('new-model')
+  expect(state.selectedSpeedMode.value).toBe('priority')
+  state.setSelectedReasoningEffort('high')
+  expect(state.selectedReasoningEffort.value).toBe('high')
+  state.initializeWebConversation('')
+  expect(state.selectedReasoningEffort.value).toBe('low')
+})
+
+it('lets the new-thread composer override a saved default model for the pending session', () => {
+  installTestWindow()
+  const state = useDesktopState()
+  const desired = { model: 'gpt-6-astra', provider: 'codex', effort: 'ultra', tier: 'priority' }
+  state.configureWebDefaults(desired, true)
+  state.initializeWebConversation('')
+
+  state.setSelectedModelIdForThread('__new-thread__', 'gpt-5.6-sol')
+
+  expect(state.selectedModelId.value).toBe('gpt-5.6-sol')
+  expect(state.readModelIdForThread('__new-thread__')).toBe('gpt-5.6-sol')
+  expect(state.webPreferenceState.value.defaults).toEqual(desired)
+  expect(state.webPreferenceState.value.threads).toEqual({})
+})
+
+it('restores the preferred model after account catalog changes without rewriting defaults', async () => {
+  installTestWindow()
+  gatewayMocks.getThreadGroupsPage.mockResolvedValue({ groups: [], nextCursor: null })
+  gatewayMocks.getCurrentModelConfig.mockResolvedValue({ model: 'gpt-6-astra', providerId: 'codex', reasoningEffort: 'ultra', speedMode: '' })
+  gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-6-astra', 'gpt-5.6-sol'])
+  const state = useDesktopState()
+  state.primeSelectedThread('')
+  const desired = { model: 'gpt-6-astra', provider: 'codex', effort: 'ultra', tier: '' }
+  state.configureWebDefaults(desired, true)
+  state.initializeWebConversation('')
+  await state.refreshAll({ includeSelectedThreadMessages: false, awaitAncillaryRefreshes: true })
+  expect(state.selectedModelId.value).toBe('gpt-6-astra')
+  gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-5.6-luna', 'gpt-5.6-sol'])
+  await state.refreshAll({ includeSelectedThreadMessages: false, awaitAncillaryRefreshes: true })
+  expect(state.selectedModelId.value).toBe('gpt-5.6-sol')
+  expect(state.webPreferenceState.value.defaults).toEqual(desired)
+  gatewayMocks.getAvailableModelIds.mockResolvedValue(['gpt-6-astra', 'gpt-5.6-sol'])
+  await state.refreshAll({ includeSelectedThreadMessages: false, awaitAncillaryRefreshes: true })
+  expect(state.selectedModelId.value).toBe('gpt-6-astra')
+  expect(state.webPreferenceState.value.defaults).toEqual(desired)
+  state.stopPolling()
 })

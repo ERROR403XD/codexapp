@@ -327,7 +327,7 @@ describe('isEmptyThreadReadError', () => {
 describe('isThreadMaterializationPendingError', () => {
   it('matches Codex live-state reads before the first message is materialized', () => {
     expect(isThreadMaterializationPendingError(new Error(
-      'thread 019e1f04-dca4-7823-8b9a-554b9bd22f57 is not materialized yet; includeTurns is unavailable before first user message',
+      'thread 00000000-0000-4000-8000-000000000001 is not materialized yet; includeTurns is unavailable before first user message',
     ))).toBe(true)
   })
 

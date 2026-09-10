@@ -1,5 +1,6 @@
 <template>
   <section class="thread-tree-root" :class="{ 'chats-first': showChatsFirst }">
+    <p v-if="quotaResumeError" class="account-panel-error" role="alert">{{ t(quotaResumeError) }}</p>
     <section v-if="pinnedThreads.length > 0" class="pinned-section">
       <SidebarMenuRow
         as="button"
@@ -15,7 +16,7 @@
         <span class="thread-tree-header">{{ t('Pinned') }}</span>
       </SidebarMenuRow>
 
-      <ul v-if="isPinnedSectionExpanded" class="thread-list">
+      <ul v-if="isPinnedSectionExpanded || isSearchActive" class="thread-list">
         <li
           v-for="thread in pinnedThreads"
           :key="thread.id"
@@ -39,10 +40,10 @@
                   class="thread-delete-button"
                   type="button"
                   :data-confirming="isInlineDeleteConfirming(thread.id)"
-                  :title="isInlineDeleteConfirming(thread.id) ? 'Confirm delete' : t('Delete thread')"
+                  :title="isInlineDeleteConfirming(thread.id) ? t('Confirm delete') : t('Delete thread')"
                   @click.stop="onInlineDeleteClick(thread.id)"
                 >
-                  <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">Confirm</span>
+                  <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">{{ t('Confirm') }}</span>
                   <IconTablerTrash v-else class="thread-icon" />
                 </button>
               </span>
@@ -62,25 +63,27 @@
                       {{ threadAutomationCount(thread.id) }}
                     </span>
                   </span>
+                  <span v-if="goals?.[thread.id]" class="thread-row-automation-chip thread-row-goal-chip" :title="t(`持续目标 · ${t(goalStatusLabels[goals[thread.id]!.status])}`)" :aria-label="t('持续目标')"><IconTablerTarget class="thread-row-automation-icon" /></span>
+                  <span v-if="quotaResumeMarks?.[thread.id]" class="thread-row-automation-chip" :title="t(quotaResumeTitle(thread.id))" :aria-label="t('额度恢复后继续')"><IconTablerPlayerPlayRepeat class="thread-row-automation-icon" /></span>
                   <span
                     v-if="thread.pendingRequestState"
                     class="thread-row-request-chip"
                     :data-state="thread.pendingRequestState"
                   >
-                    {{ threadRequestLabel(thread) }}
+                    {{ t(threadRequestLabel(thread)) }}
                   </span>
                 </span>
               </span>
             </button>
             <template #right>
-              <span class="thread-row-time">{{ formatRelativeThread(thread) }}</span>
+              <span class="thread-row-time">{{ t(formatRelativeThread(thread)) }}</span>
             </template>
             <template #right-hover>
               <div :ref="(el) => setThreadMenuWrapRef(thread.id, el)" class="thread-menu-wrap">
                 <button
                   class="thread-menu-trigger"
                   type="button"
-                  title="thread_menu"
+                  :title="t('Thread menu')"
                   @click.stop="toggleThreadMenu(thread.id)"
                 >
                   <IconTablerDots class="thread-icon" />
@@ -172,10 +175,10 @@
         </template>
       </SidebarMenuRow>
 
-      <template v-if="isProjectsSectionExpanded">
-      <p v-if="projectAutomationActionError" class="thread-tree-action-error">{{ projectAutomationActionError }}</p>
+      <template v-if="isProjectsSectionExpanded || isSearchActive">
+      <p v-if="projectAutomationActionError" class="thread-tree-action-error">{{ t(projectAutomationActionError) }}</p>
 
-      <p v-if="isSearchActive && filteredGroups.length === 0" class="thread-tree-no-results">{{ t('No matching threads') }}</p>
+      <p v-if="isSearchActive && searchState !== 'loading' && searchState !== 'error' && filteredGroups.length === 0 && globalThreads.length === 0 && pinnedThreads.length === 0" class="thread-tree-no-results">{{ t('No matching threads') }}</p>
 
       <p v-else-if="isLoading && groups.length === 0" class="thread-tree-loading">{{ t('Loading threads...') }}</p>
 
@@ -207,10 +210,10 @@
                 class="thread-delete-button"
                 type="button"
                 :data-confirming="isInlineDeleteConfirming(thread.id)"
-                :title="isInlineDeleteConfirming(thread.id) ? 'Confirm delete' : t('Delete thread')"
+                :title="isInlineDeleteConfirming(thread.id) ? t('Confirm delete') : t('Delete thread')"
                 @click.stop="onInlineDeleteClick(thread.id)"
               >
-                <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">Confirm</span>
+                <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">{{ t('Confirm') }}</span>
                 <IconTablerTrash v-else class="thread-icon" />
               </button>
             </span>
@@ -230,25 +233,27 @@
                     {{ threadAutomationCount(thread.id) }}
                   </span>
                 </span>
+                <span v-if="goals?.[thread.id]" class="thread-row-automation-chip thread-row-goal-chip" :title="t(`持续目标 · ${t(goalStatusLabels[goals[thread.id]!.status])}`)" :aria-label="t('持续目标')"><IconTablerTarget class="thread-row-automation-icon" /></span>
+                  <span v-if="quotaResumeMarks?.[thread.id]" class="thread-row-automation-chip" :title="t(quotaResumeTitle(thread.id))" :aria-label="t('额度恢复后继续')"><IconTablerPlayerPlayRepeat class="thread-row-automation-icon" /></span>
                 <span
                   v-if="thread.pendingRequestState"
                   class="thread-row-request-chip"
                   :data-state="thread.pendingRequestState"
                 >
-                  {{ threadRequestLabel(thread) }}
+                  {{ t(threadRequestLabel(thread)) }}
                 </span>
               </span>
             </span>
           </button>
           <template #right>
-            <span class="thread-row-time">{{ formatRelativeThread(thread) }}</span>
+            <span class="thread-row-time">{{ t(formatRelativeThread(thread)) }}</span>
           </template>
           <template #right-hover>
             <div :ref="(el) => setThreadMenuWrapRef(thread.id, el)" class="thread-menu-wrap">
               <button
                 class="thread-menu-trigger"
                 type="button"
-                title="thread_menu"
+                :title="t('Thread menu')"
                 @click.stop="toggleThreadMenu(thread.id)"
               >
                 <IconTablerDots class="thread-icon" />
@@ -318,7 +323,7 @@
                   <button
                     class="project-menu-trigger"
                     type="button"
-                    title="project_menu"
+                    :title="t('Project menu')"
                     @click.stop="toggleProjectMenu(group.projectName)"
                   >
                     <IconTablerDots class="thread-icon" />
@@ -330,15 +335,14 @@
                     :data-open-direction="projectMenuDirectionById[group.projectName] ?? 'down'"
                     @click.stop
                   >
-                    <template v-if="projectMenuMode === 'actions'">
                       <button class="project-menu-item" type="button" @click="onBrowseProjectFiles(group.projectName)">
-                        Browse files
+                        {{ t('Browse files') }}
                       </button>
                       <button class="project-menu-item" type="button" @click="onSaveProject(group.projectName)">
-                        Export Project
+                        {{ t('Export Project') }}
                       </button>
                       <button class="project-menu-item" type="button" @click="openProjectAutomationDialog(group.projectName)">
-                        {{ projectHasAutomation(group.projectName) ? 'Manage automations…' : 'Add automation…' }}
+                        {{ projectHasAutomation(group.projectName) ? t('Manage automations…') : t('Add automation…') }}
                       </button>
                       <button
                         v-if="projectGitRepoByName[group.projectName]"
@@ -346,28 +350,18 @@
                         type="button"
                         @click="onCreateProjectWorktree(group.projectName)"
                       >
-                        New worktree
+                        {{ t('New worktree') }}
                       </button>
-                      <button class="project-menu-item" type="button" @click="openRenameProjectMenu(group)">
-                        Rename project
-                      </button>
+                      <button class="project-menu-item" type="button" @click="openRenameProjectMenu(group)"> {{ t('编辑项目') }} </button>
                       <button
                         class="project-menu-item project-menu-item-danger"
                         type="button"
                         @click="onRemoveProject(group.projectName)"
                       >
-                        Remove
+                        {{ t('Remove') }}
                       </button>
-                    </template>
-                    <template v-else>
-                      <label class="project-menu-label">{{ t('Project name') }}</label>
-                      <input
-                        v-model="projectRenameDraft"
-                        class="project-menu-input"
-                        type="text"
-                        @input="onProjectNameInput(group.projectName)"
-                      />
-                    </template>
+
+
                   </div>
                 </div>
 
@@ -412,10 +406,10 @@
                       class="thread-delete-button"
                       type="button"
                       :data-confirming="isInlineDeleteConfirming(thread.id)"
-                      :title="isInlineDeleteConfirming(thread.id) ? 'Confirm delete' : t('Delete thread')"
+                      :title="isInlineDeleteConfirming(thread.id) ? t('Confirm delete') : t('Delete thread')"
                       @click.stop="onInlineDeleteClick(thread.id)"
                     >
-                      <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">Confirm</span>
+                      <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">{{ t('Confirm') }}</span>
                       <IconTablerTrash v-else class="thread-icon" />
                     </button>
                   </span>
@@ -435,25 +429,27 @@
                           {{ threadAutomationCount(thread.id) }}
                         </span>
                       </span>
+                      <span v-if="goals?.[thread.id]" class="thread-row-automation-chip thread-row-goal-chip" :title="t(`持续目标 · ${t(goalStatusLabels[goals[thread.id]!.status])}`)" :aria-label="t('持续目标')"><IconTablerTarget class="thread-row-automation-icon" /></span>
+                  <span v-if="quotaResumeMarks?.[thread.id]" class="thread-row-automation-chip" :title="t(quotaResumeTitle(thread.id))" :aria-label="t('额度恢复后继续')"><IconTablerPlayerPlayRepeat class="thread-row-automation-icon" /></span>
                       <span
                         v-if="thread.pendingRequestState"
                         class="thread-row-request-chip"
                         :data-state="thread.pendingRequestState"
                       >
-                        {{ threadRequestLabel(thread) }}
+                        {{ t(threadRequestLabel(thread)) }}
                       </span>
                     </span>
                   </span>
                 </button>
                 <template #right>
-                  <span class="thread-row-time">{{ formatRelativeThread(thread) }}</span>
+                  <span class="thread-row-time">{{ t(formatRelativeThread(thread)) }}</span>
                 </template>
                 <template #right-hover>
                   <div :ref="(el) => setThreadMenuWrapRef(thread.id, el)" class="thread-menu-wrap">
                     <button
                       class="thread-menu-trigger"
                       type="button"
-                      title="thread_menu"
+                      :title="t('Thread menu')"
                       @click.stop="toggleThreadMenu(thread.id)"
                     >
                       <IconTablerDots class="thread-icon" />
@@ -476,7 +472,7 @@
               <span class="thread-show-more-spacer" />
             </template>
             <button class="thread-show-more-button" type="button" @click="toggleProjectExpansion(group.projectName)">
-              {{ isExpanded(group.projectName) ? 'Show less' : 'Show more' }}
+              {{ isExpanded(group.projectName) ? t('Show less') : t('Show more') }}
             </button>
           </SidebarMenuRow>
       </article>
@@ -512,8 +508,8 @@
         </template>
       </SidebarMenuRow>
 
-      <p v-if="isChatsSectionExpanded && chatThreads.length === 0" class="thread-tree-no-results">{{ t('No chats') }}</p>
-      <ul v-else-if="isChatsSectionExpanded" class="thread-list thread-list-global">
+      <p v-if="!isSearchActive && isChatsSectionExpanded && chatThreads.length === 0" class="thread-tree-no-results">{{ t('No chats') }}</p>
+      <ul v-else-if="isChatsSectionExpanded || isSearchActive" class="thread-list thread-list-global">
         <li
           v-for="thread in visibleChatThreads"
           :key="thread.id"
@@ -541,10 +537,10 @@
                   class="thread-delete-button"
                   type="button"
                   :data-confirming="isInlineDeleteConfirming(thread.id)"
-                  :title="isInlineDeleteConfirming(thread.id) ? 'Confirm delete' : t('Delete thread')"
+                  :title="isInlineDeleteConfirming(thread.id) ? t('Confirm delete') : t('Delete thread')"
                   @click.stop="onInlineDeleteClick(thread.id)"
                 >
-                  <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">Confirm</span>
+                  <span v-if="isInlineDeleteConfirming(thread.id)" class="thread-delete-confirm-label">{{ t('Confirm') }}</span>
                   <IconTablerTrash v-else class="thread-icon" />
                 </button>
               </span>
@@ -564,25 +560,27 @@
                       {{ threadAutomationCount(thread.id) }}
                     </span>
                   </span>
+                  <span v-if="goals?.[thread.id]" class="thread-row-automation-chip thread-row-goal-chip" :title="t(`持续目标 · ${t(goalStatusLabels[goals[thread.id]!.status])}`)" :aria-label="t('持续目标')"><IconTablerTarget class="thread-row-automation-icon" /></span>
+                  <span v-if="quotaResumeMarks?.[thread.id]" class="thread-row-automation-chip" :title="t(quotaResumeTitle(thread.id))" :aria-label="t('额度恢复后继续')"><IconTablerPlayerPlayRepeat class="thread-row-automation-icon" /></span>
                   <span
                     v-if="thread.pendingRequestState"
                     class="thread-row-request-chip"
                     :data-state="thread.pendingRequestState"
                   >
-                    {{ threadRequestLabel(thread) }}
+                    {{ t(threadRequestLabel(thread)) }}
                   </span>
                 </span>
               </span>
             </button>
             <template #right>
-              <span class="thread-row-time">{{ formatRelativeThread(thread) }}</span>
+              <span class="thread-row-time">{{ t(formatRelativeThread(thread)) }}</span>
             </template>
             <template #right-hover>
               <div :ref="(el) => setThreadMenuWrapRef(thread.id, el)" class="thread-menu-wrap">
                 <button
                   class="thread-menu-trigger"
                   type="button"
-                  title="thread_menu"
+                  :title="t('Thread menu')"
                   @click.stop="toggleThreadMenu(thread.id)"
                 >
                   <IconTablerDots class="thread-icon" />
@@ -598,7 +596,7 @@
           <span class="thread-show-more-spacer" />
         </template>
         <button class="thread-show-more-button" type="button" @click="toggleChatsListExpansion">
-          {{ isChatsListExpanded ? 'Show less' : 'Show more' }}
+          {{ isChatsListExpanded ? t('Show less') : t('Show more') }}
         </button>
       </SidebarMenuRow>
     </section>
@@ -612,32 +610,21 @@
         :data-open-direction="getThreadMenuDirection(openThreadMenuThread.id)"
         @click.stop
       >
+        <button class="thread-menu-item" type="button" @click="emit('toggle-quota-resume', openThreadMenuThread.id)">{{ t(quotaResumeMarks?.[openThreadMenuThread.id] ? '取消额度恢复续跑' : '额度恢复后继续') }}</button>
         <button class="thread-menu-item" type="button" @click="openAutomationDialog(openThreadMenuThread.id)">
-          {{ threadHasAutomation(openThreadMenuThread.id) ? 'Manage automations…' : 'Add automation…' }}
+          {{ threadHasAutomation(openThreadMenuThread.id) ? t('Manage automations…') : t('Add automation…') }}
         </button>
         <button class="thread-menu-item" type="button" @click="onBrowseThreadFiles(openThreadMenuThread.id)">
-          Browse files
+          {{ t('Browse files') }}
         </button>
         <button class="thread-menu-item" type="button" @click="onSaveThreadProject(openThreadMenuThread.id)">
-          Export Project
-        </button>
-        <button class="thread-menu-item" type="button" @click="onCopyThreadPath(openThreadMenuThread.id)">
-          Copy path
-        </button>
-        <button
-          class="thread-menu-item"
-          type="button"
-          :disabled="openThreadMenuThread.id !== selectedThreadId"
-          :title="openThreadMenuThread.id === selectedThreadId ? 'Copy chat' : 'Open this chat before copying'"
-          @click="onCopyThreadChat(openThreadMenuThread.id)"
-        >
-          Copy chat
+          {{ t('Export Project') }}
         </button>
         <button class="thread-menu-item" type="button" @click="onForkThread(openThreadMenuThread.id)">
-          Create chat fork
+          {{ t('Create chat fork') }}
         </button>
         <button class="thread-menu-item" type="button" @click="onTogglePinFromMenu(openThreadMenuThread.id)">
-          {{ isPinned(openThreadMenuThread.id) ? 'Unpin thread' : 'Pin thread' }}
+          {{ isPinned(openThreadMenuThread.id) ? t('Unpin thread') : t('Pin thread') }}
         </button>
         <button class="thread-menu-item" type="button" @click="openRenameThreadDialog(openThreadMenuThread.id, openThreadMenuThread.title)">
           {{ t('Rename thread') }}
@@ -648,147 +635,155 @@
       </div>
     </Teleport>
 
-    <Teleport to="body">
-      <div v-if="renameThreadDialogVisible" class="rename-thread-overlay" @click.self="closeRenameThreadDialog">
-        <div class="rename-thread-panel" role="dialog" aria-modal="true" aria-label="Thread title">
-          <h3 class="rename-thread-title">{{ t('Rename thread') }}</h3>
-          <p class="rename-thread-subtitle">Make it short and recognizable.</p>
+    <AppDialog :open="renameThreadDialogVisible" :title="t('Rename thread')" size="compact" @close="closeRenameThreadDialog">
+          <p class="rename-thread-subtitle">{{ t('Make it short and recognizable.') }}</p>
           <input
             ref="renameThreadInputRef"
             v-model="renameThreadDraft"
             class="rename-thread-input"
             type="text"
-            placeholder="Add title..."
+            :placeholder="t('Add title...')"
             @keydown.enter.prevent="submitRenameThread"
             @keydown.esc.prevent="closeRenameThreadDialog"
           />
+      <template #footer>
           <div class="rename-thread-actions">
-            <button class="rename-thread-button" type="button" @click="closeRenameThreadDialog">{{ t('Cancel') }}</button>
-            <button class="rename-thread-button rename-thread-button-primary" type="button" @click="submitRenameThread">{{ t('Save') }}</button>
+            <AppButton class="rename-thread-button" type="button" @click="closeRenameThreadDialog">{{ t('Cancel') }}</AppButton>
+            <AppButton class="rename-thread-button rename-thread-button-primary" type="button" @click="submitRenameThread">{{ t('Save') }}</AppButton>
           </div>
-        </div>
-      </div>
-    </Teleport>
+      </template>
+    </AppDialog>
 
-    <Teleport to="body">
-      <div v-if="deleteThreadDialogVisible" class="rename-thread-overlay" @click.self="closeDeleteThreadDialog">
-        <div class="rename-thread-panel" role="dialog" aria-modal="true" aria-label="Delete thread">
-          <h3 class="rename-thread-title">{{ deleteThreadHasAutomation ? 'Archive chat and remove automations?' : 'Delete thread?' }}</h3>
+    <AppDialog :open="deleteThreadDialogVisible" :title="deleteThreadHasAutomation ? t('Archive chat and remove automations?') : t('Delete thread?')" size="compact" @close="closeDeleteThreadDialog">
           <p class="rename-thread-subtitle">
             <template v-if="deleteThreadHasAutomation">
-              This will archive the thread "{{ deleteThreadTitle }}" and remove the attached heartbeat automations.
+              {{ t('Archive {title} and remove its heartbeat automations.', { title: deleteThreadTitle }) }}
             </template>
             <template v-else>
-              This will archive the thread "{{ deleteThreadTitle }}". You can find it later in archived threads.
+              {{ t('Archive {title}. You can find it later in archived threads.', { title: deleteThreadTitle }) }}
             </template>
           </p>
+      <template #footer>
           <div class="rename-thread-actions">
-            <button class="rename-thread-button" type="button" @click="closeDeleteThreadDialog">Cancel</button>
-            <button class="rename-thread-button rename-thread-button-danger" type="button" @click="submitDeleteThread">
-              {{ deleteThreadHasAutomation ? 'Archive and remove' : 'Delete' }}
-            </button>
+            <AppButton class="rename-thread-button" type="button" @click="closeDeleteThreadDialog">{{ t('Cancel') }}</AppButton>
+            <AppButton class="rename-thread-button rename-thread-button-danger" variant="danger" type="button" @click="submitDeleteThread">
+              {{ deleteThreadHasAutomation ? t('Archive and remove') : t('Delete') }}
+            </AppButton>
           </div>
-        </div>
-      </div>
-    </Teleport>
+      </template>
+    </AppDialog>
 
-    <Teleport to="body">
-      <div v-if="automationDialogVisible" class="rename-thread-overlay" @click.self="closeAutomationDialog">
-        <div class="rename-thread-panel automation-thread-panel" role="dialog" aria-modal="true" :aria-label="automationDialogScope === 'project' ? 'Project automation' : 'Thread automation'">
-          <h3 class="rename-thread-title">{{ automationDialogMode === 'edit' ? 'Edit automation' : 'Add automation' }}</h3>
-          <p class="rename-thread-subtitle">{{ automationDialogSubtitle }}</p>
+    <AppDialog :open="automationDialogVisible" :title="automationDialogMode === 'edit' ? t('Edit automation') : t('Add automation')" :busy="isSavingAutomation || isRunningAutomation" panel-class="automation-thread-panel" @close="closeAutomationDialog">
+          <div class="automation-account-fields">
+            <div class="automation-thread-field">
+              <span class="automation-thread-label">{{ t('使用账号') }}</span>
+              <AppSelect
+                v-model="automationDraft.accountStorageId"
+                class="automation-account-picker automation-thread-dropdown"
+                :options="automationAccountOptions"
+                enable-search
+                :search-placeholder="t('搜索账号')"
+                :disabled="isSavingAutomation || isRunningAutomation"
+              />
+            </div>
+            <label class="automation-protection-check">
+              <input v-model="automationDraft.protected" type="checkbox" :disabled="isSavingAutomation || isRunningAutomation" />
+              <span>{{ t('受保护任务') }}</span>
+            </label>
+          </div>
 
           <div v-if="automationTargetPickerVisible && automationDialogMode === 'create'" class="automation-target-picker">
-            <span class="automation-thread-label">Target</span>
-            <div class="automation-target-mode-group" role="radiogroup" aria-label="Automation target type">
-              <button
+            <span class="automation-thread-label">{{ t('Target') }}</span>
+            <div class="automation-target-mode-group" role="radiogroup" :aria-label="t('Automation target type')">
+              <AppButton
                 class="automation-target-mode"
                 :class="{ 'is-active': automationTargetMode === 'thread' }"
+                role="radio"
+                :aria-checked="automationTargetMode === 'thread'"
                 type="button"
                 @click="setAutomationTargetMode('thread')"
               >
-                Existing chat
-              </button>
-              <button
+                {{ t('Existing chat') }}
+              </AppButton>
+              <AppButton
                 class="automation-target-mode"
                 :class="{ 'is-active': automationTargetMode === 'project' }"
+                role="radio"
+                :aria-checked="automationTargetMode === 'project'"
                 type="button"
                 @click="setAutomationTargetMode('project')"
               >
-                Project
-              </button>
+                {{ t('Project') }}
+              </AppButton>
             </div>
 
             <div class="automation-target-dropdown">
-              <ComposerDropdown
+              <AppSelect
                 v-model="automationTargetValue"
                 class="automation-thread-dropdown"
                 :options="automationTargetDropdownOptions"
-                :placeholder="automationTargetMode === 'project' ? 'Select project' : 'Select chat'"
+                :placeholder="automationTargetMode === 'project' ? t('Select project') : t('Select chat')"
                 enable-search
-                :search-placeholder="automationTargetMode === 'project' ? 'Search projects' : 'Search chats'"
+                :search-placeholder="automationTargetMode === 'project' ? t('Search projects') : t('Search chats')"
               />
             </div>
           </div>
 
-          <div v-if="automationDialogAutomations.length > 0" class="automation-thread-list" :aria-label="automationDialogScope === 'project' ? 'Project automations' : 'Thread automations'">
-            <button
-              v-for="automation in automationDialogAutomations"
-              :key="automation.id"
-              class="automation-thread-list-item"
-              :class="{ 'is-active': automation.id === automationDialogAutomationId }"
-              type="button"
-              @click="selectAutomationForEditing(automation.id)"
-            >
-              <span>{{ automation.name }}</span>
-              <small>{{ automation.status === 'PAUSED' ? 'Paused' : 'Active' }}</small>
-            </button>
-            <button class="automation-thread-list-item automation-thread-list-add" type="button" @click="startNewAutomationDraft">
-              Add another automation
-            </button>
+          <label class="automation-thread-field">
+            <span class="automation-thread-label">{{ t('Name') }}</span>
+            <input v-model="automationDraft.name" class="rename-thread-input" type="text" :placeholder="t('Automation name')" />
+          </label>
+
+          <label class="automation-thread-field">
+            <span class="automation-thread-label">{{ t('Prompt') }}</span>
+            <textarea v-model="automationDraft.prompt" class="automation-thread-textarea" rows="6" :placeholder="t('Describe what the automation should do')"></textarea>
+          </label>
+
+          <p v-if="accountModelsError" role="alert">{{ t(accountModelsError) }}</p>
+          <div class="automation-model-fields">
+            <div class="automation-thread-field">
+              <span class="automation-thread-label">{{ t('模型') }}</span>
+              <AppSelect v-model="automationDraft.model" class="automation-model-picker automation-thread-dropdown" :options="automationModelOptions" enable-search :search-placeholder="t('搜索模型')" :disabled="isSavingAutomation || isRunningAutomation" />
+            </div>
+            <div class="automation-thread-field">
+              <span class="automation-thread-label">{{ t('思考强度') }}</span>
+              <AppSelect v-model="automationDraft.reasoningEffort" class="automation-effort-picker automation-thread-dropdown" :options="automationEffortOptions" :disabled="isSavingAutomation || isRunningAutomation" />
+            </div>
+            <label class="automation-fast-check" :title="t(automationFastControl.hint)">
+              <input type="checkbox" :checked="automationFastControl.checked" :disabled="isSavingAutomation || isRunningAutomation || automationFastControl.disabled" @change="automationDraft.serviceTier = automationFastControl.nextValue" /> {{ t('快速模式') }} </label>
           </div>
 
-          <label class="automation-thread-field">
-            <span class="automation-thread-label">Name</span>
-            <input v-model="automationDraft.name" class="rename-thread-input" type="text" placeholder="Automation name" />
-          </label>
-
-          <label class="automation-thread-field">
-            <span class="automation-thread-label">Prompt</span>
-            <textarea v-model="automationDraft.prompt" class="automation-thread-textarea" rows="6" placeholder="Describe what the automation should do"></textarea>
-          </label>
-
           <div class="automation-thread-field">
-            <span class="automation-thread-label">Schedule</span>
-            <div class="automation-schedule-mode-group" role="radiogroup" aria-label="Automation schedule type">
-              <button
+            <span class="automation-thread-label">{{ t('Schedule') }}</span>
+            <div class="automation-schedule-mode-group" role="radiogroup" :aria-label="t('Automation schedule type')">
+              <AppButton
                 class="automation-schedule-mode"
                 :class="{ 'is-active': automationScheduleDraft.mode === 'daily' }"
                 type="button"
                 @click="setAutomationScheduleMode('daily')"
               >
-                Daily
-              </button>
-              <button
+                {{ t('Daily') }}
+              </AppButton>
+              <AppButton
                 class="automation-schedule-mode"
                 :class="{ 'is-active': automationScheduleDraft.mode === 'interval' }"
                 type="button"
                 @click="setAutomationScheduleMode('interval')"
               >
-                Interval
-              </button>
-              <button
+                {{ t('Interval') }}
+              </AppButton>
+              <AppButton
                 class="automation-schedule-mode"
                 :class="{ 'is-active': automationScheduleDraft.mode === 'advanced' }"
                 type="button"
                 @click="setAutomationScheduleMode('advanced')"
               >
                 RRULE
-              </button>
+              </AppButton>
             </div>
 
             <div v-if="automationScheduleDraft.mode === 'daily'" class="automation-schedule-row">
-              <span class="automation-schedule-copy">Run every day at</span>
+              <span class="automation-schedule-copy">{{ t('Run every day at') }}</span>
               <input
                 v-model="automationScheduleDraft.dailyTime"
                 class="automation-schedule-time"
@@ -798,7 +793,7 @@
             </div>
 
             <div v-else-if="automationScheduleDraft.mode === 'interval'" class="automation-schedule-row">
-              <span class="automation-schedule-copy">Run every</span>
+              <span class="automation-schedule-copy">{{ t('Run every') }}</span>
               <input
                 v-model.number="automationScheduleDraft.interval"
                 class="automation-schedule-number"
@@ -807,11 +802,11 @@
                 step="1"
                 @input="syncAutomationRruleFromScheduleDraft"
               />
-              <ComposerDropdown
+              <AppSelect
                 class="automation-schedule-unit-dropdown"
                 :model-value="automationScheduleDraft.intervalUnit"
                 :options="automationIntervalUnitOptions"
-                placeholder="Unit"
+                :placeholder="t('Unit')"
                 @update:model-value="onAutomationIntervalUnitChange"
               />
             </div>
@@ -824,12 +819,12 @@
               placeholder="FREQ=DAILY;BYHOUR=9;BYMINUTE=0"
               @input="syncAutomationScheduleDraftFromRrule"
             />
-            <p class="automation-schedule-preview">{{ automationSchedulePreview }}</p>
+            <p class="automation-schedule-preview">{{ t(automationSchedulePreview) }}</p>
           </div>
 
           <div class="automation-thread-field">
-            <span class="automation-thread-label">Status</span>
-            <ComposerDropdown
+            <span class="automation-thread-label">{{ t('Status') }}</span>
+            <AppSelect
               class="automation-thread-dropdown"
               :model-value="automationDraft.status"
               :options="automationStatusOptions"
@@ -838,42 +833,49 @@
             />
           </div>
 
-          <p v-if="automationDialogError" class="rename-thread-subtitle automation-thread-error">{{ automationDialogError }}</p>
-          <p v-else-if="automationDialogNotice" class="rename-thread-subtitle automation-thread-notice">{{ automationDialogNotice }}</p>
-
+          <p v-if="automationDialogError" class="rename-thread-subtitle automation-thread-error">{{ t(automationDialogError) }}</p>
+          <p v-else-if="automationDialogNotice" class="rename-thread-subtitle automation-thread-notice">{{ t(automationDialogNotice) }}</p>
+      <template #footer>
           <div class="rename-thread-actions">
-            <button
-              v-if="automationDialogMode === 'edit' && automationDialogScope === 'thread'"
+            <AppButton
+              v-if="automationDialogMode === 'edit'"
               class="rename-thread-button"
               type="button"
               :disabled="isSavingAutomation || isRunningAutomation"
               @click="onRunAutomationFromDialog"
             >
-              {{ isRunningAutomation ? 'Running…' : 'Run now' }}
-            </button>
-            <button
+              {{ isRunningAutomation ? t('Running…') : t('Run now') }}
+            </AppButton>
+            <AppButton
               v-if="automationDialogMode === 'edit'"
-              class="rename-thread-button rename-thread-button-danger"
+              class="rename-thread-button rename-thread-button-danger" variant="danger"
               type="button"
               :disabled="isSavingAutomation || isRunningAutomation"
               @click="onDeleteAutomationFromDialog"
             >
-              Remove
-            </button>
-            <button class="rename-thread-button" type="button" :disabled="isSavingAutomation || isRunningAutomation" @click="closeAutomationDialog">
+              {{ t('Remove') }}
+            </AppButton>
+            <AppButton class="rename-thread-button" type="button" :disabled="isSavingAutomation || isRunningAutomation" @click="closeAutomationDialog">
               {{ t('Cancel') }}
-            </button>
-            <button class="rename-thread-button rename-thread-button-primary" type="button" :disabled="isSavingAutomation || isRunningAutomation" @click="submitAutomationDialog">
-              {{ isSavingAutomation ? 'Saving…' : 'Save' }}
-            </button>
+            </AppButton>
+            <AppButton class="rename-thread-button rename-thread-button-primary" type="button" :disabled="isSavingAutomation || isRunningAutomation" @click="submitAutomationDialog">
+              {{ isSavingAutomation ? t('Saving…') : t('Save') }}
+            </AppButton>
           </div>
-        </div>
-      </div>
-    </Teleport>
+      </template>
+    </AppDialog>
   </section>
 </template>
 
 <script setup lang="ts">
+import { createThreadMatcher } from '../../threadSearchMatch'
+import { useTransientNotice } from '../../composables/useTransientNotice'
+import { accountDisplayName } from '../../accountDisplay'
+import { isOverlayEventInside } from '../../composables/overlayEvents'
+import { displayTimeZone, browserTimeZone, formatLocalDateTime } from '../../dateTime'
+import { getAutomationRuntime, runAutomationNow, createAutomationRequestId } from '../../api/automationGateway'
+import AppDialog from '../common/AppDialog.vue'
+import AppButton from '../common/AppButton.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import {
@@ -897,16 +899,27 @@ import IconTablerFolder from '../icons/IconTablerFolder.vue'
 import IconTablerFolderOpen from '../icons/IconTablerFolderOpen.vue'
 import IconTablerGitFork from '../icons/IconTablerGitFork.vue'
 import IconTablerBolt from '../icons/IconTablerBolt.vue'
+import IconTablerPlayerPlayRepeat from '../icons/IconTablerPlayerPlayRepeat.vue'
+import type { QuotaResumeMark } from '../../server/threadQuotaResume'
+import IconTablerTarget from '../icons/IconTablerTarget.vue'
+import { goalStatusLabels, type ThreadGoal } from '../../api/threadCommands'
 import IconTablerTrash from '../icons/IconTablerTrash.vue'
 import { useUiLanguage } from '../../composables/useUiLanguage'
 import { useFeedbackDiagnostics } from '../../composables/useFeedbackDiagnostics'
 import { getPathLeafName, getPathParent, isAbsoluteLikePath, isProjectlessChatPath } from '../../pathUtils.js'
-import ComposerDropdown from '../content/ComposerDropdown.vue'
+import AppSelect from '../common/AppSelect.vue'
+import { normalizeModelCapability, fastModeControl, effortOptions, modelSettingsProblem, type ModelCapability } from '../../modelCapabilities'
 import SidebarMenuRow from './SidebarMenuRow.vue'
 import { reconcilePinnedThreadIds } from './pinnedThreadUtils'
 
 const props = defineProps<{
   groups: UiProjectGroup[]
+  accounts?: { storageId: string; alias?: string; email: string | null; accountId: string }[]
+  models?: string[]
+  modelCapabilities?: ModelCapability[]
+  goals?: Record<string, ThreadGoal | null>
+  quotaResumeMarks?: Record<string, QuotaResumeMark>
+  quotaResumeError?: string
   projectDisplayNameById: Record<string, string>
   projectGitRepoByName: Record<string, boolean>
   projectCwdByName: Record<string, string>
@@ -915,12 +928,18 @@ const props = defineProps<{
   isThreadListFullyLoaded: boolean
   searchQuery: string
   searchMatchedThreadIds: string[] | null
+  searchState?: 'loading' | 'ready' | 'error'
 }>()
 
+function quotaResumeTitle(threadId: string): string {
+  const status = props.quotaResumeMarks?.[threadId]?.status
+  return t('额度恢复后继续') + ' · ' + t({ armed: '已启用', waiting: '等待额度', submitted: '已提交续跑', unknown: '提交结果待核对，请查看会话' }[status || 'armed'])
+}
 const { t } = useUiLanguage()
 const { recordVisibleFailure } = useFeedbackDiagnostics()
 
 const emit = defineEmits<{
+  'toggle-quota-resume': [threadId: string]
   select: [threadId: string]
   archive: [threadId: string]
   'start-new-thread': [projectName: string]
@@ -930,11 +949,10 @@ const emit = defineEmits<{
   'save-project': [projectName: string]
   'request-project-git-status': [projectName: string]
   'create-project-worktree': [projectName: string]
-  'rename-project': [payload: { projectName: string; displayName: string }]
+  'edit-project': [projectName: string]
   'rename-thread': [payload: { threadId: string; title: string }]
   'remove-project': [projectName: string]
   'reorder-project': [payload: { projectName: string; toIndex: number }]
-  'copy-thread-chat': [threadId: string]
   'fork-thread': [threadId: string]
   'start-new-chat': []
   'automations-changed': []
@@ -1005,8 +1023,6 @@ const openThreadMenuId = ref('')
 const projectMenuDirectionById = ref<Record<string, MenuDirection>>({})
 const threadMenuDirectionById = ref<Record<string, MenuDirection>>({})
 const openThreadMenuStyle = ref<Record<string, string>>({})
-const projectMenuMode = ref<'actions' | 'rename'>('actions')
-const projectRenameDraft = ref('')
 const renameThreadDialogVisible = ref(false)
 const renameThreadDialogThreadId = ref('')
 const renameThreadDraft = ref('')
@@ -1026,21 +1042,58 @@ const automationTargetPickerVisible = ref(false)
 const automationTargetMode = ref<AutomationTargetMode>('thread')
 const automationTargetValue = ref('')
 const automationDialogError = ref('')
-const automationDialogNotice = ref('')
+const automationDialogNotice = useTransientNotice()
 const projectAutomationActionError = ref('')
 const isSavingAutomation = ref(false)
 const isRunningAutomation = ref(false)
+const automationTimezone = ref('')
+watch(automationDialogVisible, (visible) => {
+  if (visible && !automationTimezone.value) automationTimezone.value = browserTimeZone()
+})
 const automationDraft = ref<{
   name: string
   prompt: string
   rrule: string
   status: UiThreadAutomationStatus
+  model: string
+  serviceTier: string
+  accountStorageId: string
+  protected: boolean
+  reasoningEffort: string
 }>({
   name: '',
   prompt: '',
   rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
-  status: 'ACTIVE',
+  status: 'ACTIVE', model: '', reasoningEffort: '', serviceTier: '', accountStorageId: '', protected: false,
 })
+const automationAccountOptions = computed(() => [{ value: '', label: t('跟随全局账号') }, ...(props.accounts || []).map(account => ({ value: account.storageId, label: accountDisplayName(account) }))])
+const accountModels = ref<import('../../modelCapabilities').ModelCapability[]>([])
+const accountModelsLoading = ref(false)
+const accountModelsError = ref('')
+let accountModelGeneration = 0
+watch(() => [automationDialogVisible.value, automationDraft.value.accountStorageId] as const, async ([visible, storageId]) => {
+  const generation = ++accountModelGeneration
+  accountModels.value = []
+  accountModelsError.value = ''
+  accountModelsLoading.value = false
+  if (!visible || !storageId) return
+  accountModelsLoading.value = true
+  try {
+    const response = await fetch(`/codex-api/accounts/models?storageId=${encodeURIComponent(storageId)}`)
+    const data = await response.json()
+    if (!response.ok) throw new Error('所选账号模型目录读取失败')
+    if (generation !== accountModelGeneration) return
+    accountModels.value = data.data.map((row: unknown) => normalizeModelCapability(row, 'codex')).filter(Boolean)
+  } catch {
+    if (generation === accountModelGeneration) accountModelsError.value = '所选账号模型目录读取失败，请重新选择账号重试。'
+  } finally {
+    if (generation === accountModelGeneration) accountModelsLoading.value = false
+  }
+})
+const automationModelOptions = computed(() => [{ value: '', label: t('跟随运行时默认模型') }, ...(automationDraft.value.accountStorageId ? accountModels.value.map(model => model.id) : props.models ?? []).map(value => ({ value, label: value }))])
+const automationModelCapability = computed(() => (automationDraft.value.accountStorageId ? accountModels.value : props.modelCapabilities)?.find(model => model.id === automationDraft.value.model))
+const automationFastControl = computed(() => fastModeControl(automationModelCapability.value, automationDraft.value.serviceTier))
+const automationEffortOptions = computed(() => effortOptions(automationModelCapability.value, automationDraft.value.reasoningEffort))
 const automationScheduleDraft = ref<AutomationScheduleDraft>({
   mode: 'daily',
   dailyTime: '09:00',
@@ -1056,15 +1109,6 @@ const automationDialogAutomations = computed(() => {
   return threadId ? (automationByThreadId.value[threadId] ?? []) : []
 })
 const automationSchedulePreview = computed(() => describeAutomationSchedule(automationDraft.value.rrule))
-const automationDialogSubtitle = computed(() => {
-  if (automationTargetPickerVisible.value && automationDialogMode.value === 'create') {
-    if (automationTargetMode.value === 'thread') return 'This creates a heartbeat automation attached to the selected chat.'
-    return 'This creates a project automation attached to the selected project folder.'
-  }
-  return automationDialogScope.value === 'project'
-    ? 'This creates project automations attached to the selected project folder.'
-    : 'This creates heartbeat automations attached to the selected thread.'
-})
 const automationThreadTargetOptions = computed(() => {
   const rows: Array<{ value: string; label: string; searchText: string }> = []
   for (const group of props.groups) {
@@ -1100,11 +1144,11 @@ const automationTargetDropdownOptions = computed(() => {
     : automationThreadTargetOptions.value
   return source.map((option) => ({ value: option.value, label: option.label }))
 })
-const automationIntervalUnitOptions = [
-  { value: 'minutes', label: 'minutes' },
-  { value: 'hours', label: 'hours' },
-  { value: 'days', label: 'days' },
-]
+const automationIntervalUnitOptions = computed(() => [
+  { value: 'minutes', label: t('minutes') },
+  { value: 'hours', label: t('hours') },
+  { value: 'days', label: t('days') },
+])
 const automationStatusOptions = computed(() => [
   { value: 'ACTIVE', label: t('Active') },
   { value: 'PAUSED', label: t('Paused') },
@@ -1130,15 +1174,23 @@ const openThreadMenuPanelRef = ref<HTMLElement | null>(null)
 const isOrganizeMenuOpen = ref(false)
 const THREAD_VIEW_MODE_STORAGE_KEY = 'codex-web-local.thread-view-mode.v1'
 const threadViewMode = ref<'project' | 'chronological'>(loadThreadViewMode())
+let projectMeasureFrame = 0
+const pendingProjectMeasurements = new Set<HTMLElement>()
 const projectGroupResizeObserver =
   typeof window !== 'undefined'
     ? new ResizeObserver((entries) => {
-        for (const entry of entries) {
-          const element = entry.target as HTMLElement
-          const projectName = projectNameByElement.get(element)
-          if (!projectName) continue
-          updateMeasuredProjectHeight(projectName, element)
-        }
+        for (const entry of entries) pendingProjectMeasurements.add(entry.target as HTMLElement)
+        if (projectMeasureFrame) return
+        projectMeasureFrame = requestAnimationFrame(() => {
+          projectMeasureFrame = 0
+          for (const element of pendingProjectMeasurements) {
+            const projectName = projectNameByElement.get(element)
+            if (projectName && element.isConnected && projectGroupElementByName.get(projectName) === element) {
+              updateMeasuredProjectHeight(projectName, element)
+            }
+          }
+          pendingProjectMeasurements.clear()
+        })
       })
     : null
 const COLLAPSED_STORAGE_KEY = 'codex-web-local.collapsed-projects.v1'
@@ -1243,6 +1295,13 @@ const matchedThreadIdSet = computed(() => {
   if (!props.searchMatchedThreadIds) return null
   return new Set(props.searchMatchedThreadIds)
 })
+const searchRank = computed(() => new Map((props.searchMatchedThreadIds ?? []).map((id, index) => [id, index])))
+const matchSearchTitle = computed(() => createThreadMatcher(props.searchQuery))
+function compareSearchRank(first: UiThread, second: UiThread): number {
+  if (!isSearchActive.value) return 0
+  if (props.searchMatchedThreadIds) return (searchRank.value.get(first.id) ?? Infinity) - (searchRank.value.get(second.id) ?? Infinity)
+  return matchSearchTitle.value(second.title) - matchSearchTitle.value(first.title)
+}
 const pinnedThreadIdSet = computed(() => new Set(pinnedThreadIds.value))
 const optimisticallyArchivedThreadIdSet = computed(() => new Set(optimisticallyArchivedThreadIds.value))
 
@@ -1252,16 +1311,15 @@ function threadMatchesSearch(thread: UiThread): boolean {
   if (matchedThreadIdSet.value) {
     return matchedThreadIdSet.value.has(thread.id)
   }
-  const q = normalizedSearchQuery.value
-  return thread.title.toLowerCase().includes(q) || thread.preview.toLowerCase().includes(q)
+  return matchSearchTitle.value(thread.title) > 0
 }
 
 const filteredGroups = computed<UiProjectGroup[]>(() => {
   return props.groups.flatMap((group) => {
-    const threads = group.threads.filter((thread) => !isProjectlessChatPath(thread.cwd) && threadMatchesSearch(thread))
+    const threads = group.threads.filter((thread) => !isProjectlessChatPath(thread.cwd) && threadMatchesSearch(thread)).sort(compareSearchRank)
     if (threads.length > 0) return [{ ...group, threads }]
     return !isSearchActive.value && group.threads.length === 0 ? [{ ...group, threads }] : []
-  })
+  }).sort((first, second) => isSearchActive.value ? compareSearchRank(first.threads[0]!, second.threads[0]!) : 0)
 })
 
 const isChronologicalView = computed(() => threadViewMode.value === 'chronological')
@@ -1280,7 +1338,7 @@ const globalThreads = computed<UiThread[]>(() => {
   return rows.sort((first, second) => {
     const firstTimestamp = new Date(first.updatedAtIso || first.createdAtIso).getTime()
     const secondTimestamp = new Date(second.updatedAtIso || second.createdAtIso).getTime()
-    return secondTimestamp - firstTimestamp
+    return compareSearchRank(first, second) || secondTimestamp - firstTimestamp
   })
 })
 
@@ -1291,7 +1349,7 @@ const chatThreads = computed(() => {
     .sort((first, second) => {
       const firstTimestamp = new Date(first[timestampKey] || first.updatedAtIso || first.createdAtIso).getTime()
       const secondTimestamp = new Date(second[timestampKey] || second.updatedAtIso || second.createdAtIso).getTime()
-      return secondTimestamp - firstTimestamp
+      return compareSearchRank(first, second) || secondTimestamp - firstTimestamp
     })
 })
 
@@ -1435,7 +1493,8 @@ const pinnedThreads = computed(() =>
   pinnedThreadIds.value
     .map((threadId) => threadById.value.get(threadId) ?? hydratedPinnedThreadById.value[threadId] ?? null)
     .filter((thread): thread is UiThread => thread !== null)
-    .filter(threadMatchesSearch),
+    .filter(threadMatchesSearch)
+    .sort(compareSearchRank),
 )
 
 function togglePinnedSection(): void {
@@ -1576,7 +1635,7 @@ function automationTooltip(automations: UiThreadAutomation[]): string {
   const nextRunLabel = automation.status === 'PAUSED'
     ? '-'
     : automation.nextRunAtMs
-      ? new Date(automation.nextRunAtMs).toLocaleString()
+      ? formatLocalDateTime(automation.nextRunAtMs)
       : 'Not scheduled'
   return `${automation.name} • Next run: ${nextRunLabel}`
 }
@@ -1665,12 +1724,12 @@ function describeAutomationSchedule(rrule: string): string {
   if (frequency === 'DAILY' && parts.BYHOUR !== undefined && parts.BYMINUTE !== undefined && interval === 1) {
     const hour = Math.min(23, Math.max(0, Number(parts.BYHOUR) || 0))
     const minute = Math.min(59, Math.max(0, Number(parts.BYMINUTE) || 0))
-    return `RRULE: ${rrule} · runs daily at ${padRruleNumber(hour)}:${padRruleNumber(minute)}`
+    return t('RRULE: {rrule} · runs daily at {time}', { rrule, time: `${padRruleNumber(hour)}:${padRruleNumber(minute)}` })
   }
-  if (frequency === 'MINUTELY') return `RRULE: ${rrule} · runs every ${interval} minute${interval === 1 ? '' : 's'}`
-  if (frequency === 'HOURLY') return `RRULE: ${rrule} · runs every ${interval} hour${interval === 1 ? '' : 's'}`
-  if (frequency === 'DAILY' && parts.INTERVAL !== undefined) return `RRULE: ${rrule} · runs every ${interval} day${interval === 1 ? '' : 's'}`
-  return rrule ? `RRULE: ${rrule}` : 'RRULE is required.'
+  if (frequency === 'MINUTELY') return t('RRULE: {rrule} · runs every {count} minutes', { rrule, count: interval })
+  if (frequency === 'HOURLY') return t('RRULE: {rrule} · runs every {count} hours', { rrule, count: interval })
+  if (frequency === 'DAILY' && parts.INTERVAL !== undefined) return t('RRULE: {rrule} · runs every {count} days', { rrule, count: interval })
+  return rrule ? `RRULE: ${rrule}` : t('RRULE is required.')
 }
 
 function syncAutomationRruleFromScheduleDraft(): void {
@@ -1711,11 +1770,6 @@ function setAutomationScheduleMode(mode: AutomationScheduleMode): void {
   syncAutomationRruleFromScheduleDraft()
 }
 
-function onCopyThreadChat(threadId: string): void {
-  if (threadId !== props.selectedThreadId) return
-  emit('copy-thread-chat', threadId)
-  closeThreadMenu()
-}
 
 function onForkThread(threadId: string): void {
   emit('fork-thread', threadId)
@@ -1740,16 +1794,6 @@ function onSaveThreadProject(threadId: string): void {
   closeThreadMenu()
 }
 
-async function onCopyThreadPath(threadId: string): Promise<void> {
-  const path = threadById.value.get(threadId)?.cwd?.trim() ?? ''
-  closeThreadMenu()
-  if (!path || typeof navigator === 'undefined' || !navigator.clipboard) return
-  try {
-    await navigator.clipboard.writeText(path)
-  } catch {
-    // Clipboard writes can be blocked by browser permissions; the menu action is best-effort.
-  }
-}
 
 function onThreadRowLeave(threadId: string, event?: MouseEvent): void {
   if (openThreadMenuId.value !== threadId) return
@@ -1958,6 +2002,7 @@ function setAutomationTargetMode(mode: AutomationTargetMode): void {
 }
 
 function startNewAutomationDraft(): void {
+  automationTimezone.value = ''
   automationDialogAutomationId.value = ''
   automationDialogMode.value = 'create'
   automationDialogError.value = ''
@@ -1966,7 +2011,7 @@ function startNewAutomationDraft(): void {
     name: automationDialogScope.value === 'project' ? 'Project automation' : 'Thread automation',
     prompt: '',
     rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
-    status: 'ACTIVE',
+    status: 'ACTIVE', model: '', reasoningEffort: '', serviceTier: '', accountStorageId: '', protected: false,
   }
   automationScheduleDraft.value = createScheduleDraftFromRrule(automationDraft.value.rrule)
 }
@@ -1978,16 +2023,19 @@ function selectAutomationForEditing(automationId: string): void {
   automationDialogMode.value = 'edit'
   automationDialogError.value = ''
   automationDialogNotice.value = ''
+  automationTimezone.value = existing.timezone ?? ''
   automationDraft.value = {
     name: existing.name,
     prompt: existing.prompt,
     rrule: existing.rrule,
     status: existing.status,
+    model: existing.model ?? '', reasoningEffort: existing.reasoningEffort ?? '', serviceTier: existing.serviceTier ?? '', accountStorageId: existing.accountStorageId || '', protected: existing.protected === true,
   }
   automationScheduleDraft.value = createScheduleDraftFromRrule(existing.rrule)
 }
 
 function closeAutomationDialog(): void {
+  if (isSavingAutomation.value || isRunningAutomation.value) return
   automationDialogVisible.value = false
   automationDialogScope.value = 'thread'
   automationDialogThreadId.value = ''
@@ -2081,12 +2129,19 @@ async function submitAutomationDialog(): Promise<void> {
     if (automationDialogScope.value === 'project' && !projectName) {
       throw new Error('Select a project target for this automation')
     }
+    if (accountModelsLoading.value || accountModelsError.value) throw new Error(accountModelsError.value || '正在读取所选账号模型目录')
+    if (automationDraft.value.accountStorageId && automationDraft.value.model && !accountModels.value.some(model => model.id === automationDraft.value.model)) throw new Error('所选账号不支持此模型，请重新选择')
+    const modelProblem = modelSettingsProblem(automationModelCapability.value, automationDraft.value.reasoningEffort, automationDraft.value.serviceTier)
+    if (modelProblem) throw new Error(modelProblem)
     const input = {
       id: automationDialogAutomationId.value || undefined,
       name: automationDraft.value.name,
       prompt: automationDraft.value.prompt,
       rrule: automationDraft.value.rrule,
+      timezone: displayTimeZone(),
       status: automationDraft.value.status,
+      accountStorageId: automationDraft.value.accountStorageId || null, protected: automationDraft.value.protected,
+      model: automationDraft.value.model || null, reasoningEffort: automationDraft.value.reasoningEffort || null, serviceTier: automationDraft.value.serviceTier || null,
     }
     const saved = automationDialogScope.value === 'project'
       ? await upsertProjectAutomation({ ...input, projectName })
@@ -2124,14 +2179,9 @@ async function onDeleteAutomationFromDialog(): Promise<void> {
       await deleteThreadAutomation(threadId, automationId)
       automationByThreadId.value = removeAutomationForThread(automationByThreadId.value, threadId, automationId)
     }
-    const nextAutomation = automationDialogAutomations.value[0]
-    if (nextAutomation) {
-      selectAutomationForEditing(nextAutomation.id)
-    } else {
-      startNewAutomationDraft()
-    }
     emit('automations-changed')
     isSavingAutomation.value = false
+    closeAutomationDialog()
   } catch (error) {
     automationDialogError.value = error instanceof Error ? error.message : 'Failed to remove automation'
     isSavingAutomation.value = false
@@ -2141,12 +2191,13 @@ async function onDeleteAutomationFromDialog(): Promise<void> {
 async function onRunAutomationFromDialog(): Promise<void> {
   const threadId = automationDialogThreadId.value
   const automationId = automationDialogAutomationId.value
-  if (!threadId || !automationId) return
+  const target = automationDialogScope.value === 'project' ? automationDialogProjectName.value : threadId
+  if (!target || !automationId || isRunningAutomation.value) return
   isRunningAutomation.value = true
   automationDialogError.value = ''
   automationDialogNotice.value = ''
   try {
-    await runThreadAutomationNow(threadId, automationId)
+    await runAutomationNow({ automationId, target, kind: automationDialogScope.value === 'project' ? 'cron' : 'heartbeat', requestId: createAutomationRequestId() })
     automationDialogNotice.value = 'Automation run queued.'
   } catch (error) {
     automationDialogError.value = error instanceof Error ? error.message : 'Failed to run automation'
@@ -2169,7 +2220,7 @@ function isPathLikeProjectName(value: string): boolean {
 }
 
 function getProjectTooltipTitle(projectName: string): string {
-  return isPathLikeProjectName(projectName) ? projectName : getProjectDisplayName(projectName)
+  return props.projectCwdByName[projectName]?.trim() || (isPathLikeProjectName(projectName) ? projectName : getProjectDisplayName(projectName))
 }
 
 function isDuplicatePathLeafName(value: string): boolean {
@@ -2213,8 +2264,6 @@ function isProjectMenuOpen(projectName: string): boolean {
 
 function closeProjectMenu(): void {
   openProjectMenuId.value = ''
-  projectMenuMode.value = 'actions'
-  projectRenameDraft.value = ''
 }
 
 function toggleOrganizeMenu(): void {
@@ -2255,8 +2304,6 @@ function toggleProjectMenu(projectName: string): void {
   closeThreadMenu()
   isOrganizeMenuOpen.value = false
   openProjectMenuId.value = projectName
-  projectMenuMode.value = 'actions'
-  projectRenameDraft.value = getProjectDisplayName(projectName)
   requestProjectGitStatusAndUpdateMenuDirection(projectName)
 }
 
@@ -2264,8 +2311,6 @@ function openProjectContextMenu(projectName: string): void {
   closeThreadMenu()
   isOrganizeMenuOpen.value = false
   openProjectMenuId.value = projectName
-  projectMenuMode.value = 'actions'
-  projectRenameDraft.value = getProjectDisplayName(projectName)
   requestProjectGitStatusAndUpdateMenuDirection(projectName)
 }
 
@@ -2274,14 +2319,8 @@ function getProjectRenameDraftName(group: UiProjectGroup): string {
 }
 
 function openRenameProjectMenu(group: UiProjectGroup): void {
-  closeThreadMenu()
-  const projectName = group.projectName
-  openProjectMenuId.value = projectName
-  projectMenuMode.value = 'rename'
-  projectRenameDraft.value = getProjectRenameDraftName(group)
-  nextTick(() => {
-    updateProjectMenuDirection(projectName)
-  })
+  emit('edit-project', group.projectName)
+  closeProjectMenu()
 }
 
 function onBrowseProjectFiles(projectName: string): void {
@@ -2299,12 +2338,6 @@ function onCreateProjectWorktree(projectName: string): void {
   closeProjectMenu()
 }
 
-function onProjectNameInput(projectName: string): void {
-  emit('rename-project', {
-    projectName,
-    displayName: projectRenameDraft.value,
-  })
-}
 
 function onRemoveProject(projectName: string): void {
   const projectCwd = getProjectAutomationKey(projectName)
@@ -2539,7 +2572,7 @@ function isEventInsideOpenProjectMenu(event: Event): boolean {
   if (eventPath.includes(openMenuWrapElement)) return true
 
   const target = event.target
-  return target instanceof Node ? openMenuWrapElement.contains(target) : false
+  return target instanceof Node ? isOverlayEventInside(event, openMenuWrapElement) : false
 }
 
 function isEventInsideOpenThreadMenu(event: Event): boolean {
@@ -2557,8 +2590,8 @@ function isEventInsideOpenThreadMenu(event: Event): boolean {
 
   const target = event.target
   if (!(target instanceof Node)) return false
-  if (openMenuWrapElement.contains(target)) return true
-  if (panelElement && panelElement.contains(target)) return true
+  if (isOverlayEventInside(event, openMenuWrapElement)) return true
+  if (panelElement && isOverlayEventInside(event, panelElement)) return true
   return false
 }
 
@@ -2889,6 +2922,7 @@ function projectGroupStyle(projectName: string): Record<string, string> | undefi
 }
 
 function projectThreads(group: UiProjectGroup): UiThread[] {
+  if (isSearchActive.value) return group.threads.filter(thread => !pinnedThreadIdSet.value.has(thread.id) && threadMatchesSearch(thread)).sort(compareSearchRank)
   return unpinnedThreadsByProjectName.value.get(group.projectName) ?? []
 }
 
@@ -2914,7 +2948,7 @@ function shouldShowThreadIndicator(thread: UiThread): boolean {
 }
 
 function threadRequestLabel(thread: UiThread): string {
-  return thread.pendingRequestState === 'approval' ? 'Awaiting approval' : 'Awaiting response'
+  return thread.pendingRequestState === 'approval' ? t('Awaiting approval') : t('Awaiting response')
 }
 
 function getThreadState(thread: UiThread): 'awaiting-approval' | 'awaiting-response' | 'working' | 'unread' | 'idle' {
@@ -2986,6 +3020,8 @@ watch(openThreadMenuId, (threadId) => {
 })
 
 onBeforeUnmount(() => {
+  cancelAnimationFrame(projectMeasureFrame)
+  pendingProjectMeasurements.clear()
   for (const element of projectGroupElementByName.values()) {
     projectGroupResizeObserver?.unobserve(element)
   }
@@ -3400,18 +3436,6 @@ onBeforeUnmount(() => {
   @apply mt-3 flex items-center justify-end gap-2 shrink-0;
 }
 
-.rename-thread-button {
-  @apply rounded-md px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100;
-}
-
-.rename-thread-button-primary {
-  @apply bg-zinc-900 text-white hover:bg-black;
-}
-
-.rename-thread-button-danger {
-  @apply bg-rose-600 text-white hover:bg-rose-700;
-}
-
 .automation-thread-panel {
   @apply max-w-lg overflow-y-auto;
   max-height: min(90vh, calc(100dvh - 2rem));
@@ -3452,26 +3476,6 @@ onBeforeUnmount(() => {
 
 .automation-target-dropdown {
   @apply flex flex-col gap-2;
-}
-
-.automation-thread-list {
-  @apply mb-3 flex max-h-40 flex-col gap-1 overflow-y-auto rounded-lg border border-zinc-200 bg-zinc-50 p-1;
-}
-
-.automation-thread-list-item {
-  @apply flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-sm text-zinc-700 hover:bg-white;
-}
-
-.automation-thread-list-item.is-active {
-  @apply bg-white font-medium text-zinc-950 shadow-sm;
-}
-
-.automation-thread-list-item small {
-  @apply text-xs font-normal text-zinc-500;
-}
-
-.automation-thread-list-add {
-  @apply justify-center border border-dashed border-zinc-300 text-zinc-500;
 }
 
 .automation-thread-label {
@@ -3546,8 +3550,7 @@ onBeforeUnmount(() => {
   }
 
   .automation-thread-field,
-  .automation-target-picker,
-  .automation-thread-list {
+  .automation-target-picker {
     @apply mb-2;
   }
 
