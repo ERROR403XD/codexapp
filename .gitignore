@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 dist-cli/
 output/
@@ -13,3 +13,12 @@ package-lock.json
 *.pem
 *.key
 .omx/
+
+# Local state and validation artifacts
+*.tgz
+*.zip
+*.log
+*.sqlite*
+*.db
+*.har
+*.trace

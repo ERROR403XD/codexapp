@@ -66,6 +66,11 @@
 
 
 
+          <button v-if="!isSidebarCollapsed" class="sidebar-skills-link sidebar-apps-link" :class="{ 'is-active': isSkillsRoute }" type="button" @click="openDirectory()">
+            <span class="sidebar-skills-link-icon sidebar-apps-link-icon" aria-hidden="true"><IconTablerBolt /></span>
+            <span class="sidebar-skills-link-copy"><span class="sidebar-skills-link-title">{{ t('应用') }}</span><span class="sidebar-skills-link-subtitle">{{ t('插件 / 技能 / MCP') }}</span></span>
+          </button>
+
           <button
             v-if="!isSidebarCollapsed"
             class="sidebar-skills-link sidebar-automations-link"
@@ -96,7 +101,7 @@
             </span>
           </button>
 
-          <SidebarThreadTree ref="sidebarThreadTreeRef" :groups="sidebarThreadGroups" :accounts="accounts" :models="availableModelIds" :model-capabilities="availableModels" :goals="threadGoals" :quota-resume-marks="quotaResumeMarks" :quota-resume-error="quotaResumeError" @toggle-quota-resume="toggleQuotaResume" :project-display-name-by-id="projectDisplayNameById"
+          <SidebarThreadTree ref="sidebarThreadTreeRef" :groups="sidebarThreadGroups" :accounts="executionAccounts" :models="availableModelIds" :model-capabilities="availableModels" :goals="threadGoals" :quota-resume-marks="quotaResumeMarks" :quota-resume-error="quotaResumeError" @toggle-quota-resume="toggleQuotaResume" :project-display-name-by-id="projectDisplayNameById"
             :project-git-repo-by-name="projectGitRepoByName"
             :project-cwd-by-name="projectCwdByName"
             v-if="!isSidebarCollapsed"
@@ -128,18 +133,26 @@
           </div>
           <div ref="settingsAreaRef">
             <button ref="settingsButtonRef" class="account-usage-button" type="button" :aria-expanded="isSettingsOpen" :aria-label="t('账号与用量')" @click="isSettingsOpen = !isSettingsOpen">
-              <span class="account-usage-heading"><strong>{{ t(activeAccount ? accountDisplayName(activeAccount) : '添加 GPT 账号') }}</strong><span aria-hidden="true">⌃</span></span>
-              <small v-if="activeAccount?.quotaUpdatedAtIso">{{ t('更新于') }} {{ formatLocalDateTime(activeAccount.quotaUpdatedAtIso, { year: undefined, month: undefined, day: undefined, second: '2-digit' }, 'zh-CN') }}</small>
-              <small v-if="activeAccount && (activeAccount.authStatus !== 'ready' || activeAccount.quotaStatus === 'error')" class="account-panel-error">{{ t(activeAccount.quotaError || formatAccountStatus(activeAccount)) }}</small>
-              <AccountQuota v-if="activeAccount?.quotaSnapshot" :snapshot="activeAccount.quotaSnapshot" compact />
+              <span class="account-usage-heading"><strong>{{ activeCustomConnection?.alias || t(activeAccount ? accountDisplayName(activeAccount) : '添加 GPT 账号') }}</strong><span aria-hidden="true">⌃</span></span>
+              <small v-if="!activeCustomConnection && activeAccount?.quotaUpdatedAtIso">{{ t('更新于') }} {{ formatLocalDateTime(activeAccount.quotaUpdatedAtIso, { year: undefined, month: undefined, day: undefined, second: '2-digit' }, 'zh-CN') }}</small>
+              <small v-if="!activeCustomConnection && activeAccount && (activeAccount.authStatus !== 'ready' || activeAccount.quotaStatus === 'error')" class="account-panel-error">{{ t(activeAccount.quotaError || formatAccountStatus(activeAccount)) }}</small>
+              <AccountQuota v-if="!activeCustomConnection && activeAccount?.quotaSnapshot" :snapshot="activeAccount.quotaSnapshot" compact />
+              <small v-else-if="activeCustomConnection">{{ activeCustomConnection.model }}</small>
               <small v-else>{{ t(activeAccount ? (activeAccount.quotaStatus === 'loading' ? '正在读取用量…' : '暂无用量数据') : '尚未添加账号') }}</small>
             </button>
           </div>
-          <AppPopover :open="isSettingsOpen" :anchor="settingsAreaRef" :width="400" direction="up" panel-class="account-popover" @close="isSettingsOpen = false">
-            <AccountPanel :accounts="accounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
-  @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount">
-              <template #footer><div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div><AppButton @click="openSettings">{{ t('全局设置 →') }}</AppButton></template>
-            </AccountPanel>
+          <AppPopover :open="isSettingsOpen" :anchor="settingsAreaRef" :width="400" direction="up" avoid-anchor-overlap panel-class="account-popover" @close="isSettingsOpen = false">
+            <div class="account-popover-content">
+              <div class="account-popover-scroll">
+                <AccountPanel :accounts="displayAccounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
+                  @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount" />
+                <CustomConnections @changed="onCustomConnectionsChanged" />
+              </div>
+              <footer class="account-panel-footer">
+                <div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div>
+                <AppButton @click="openSettings">{{ t('全局设置 →') }}</AppButton>
+              </footer>
+            </div>
           </AppPopover>
         </div>
       </section>
@@ -238,167 +251,16 @@
               @select-automation="onSelectAutomationInPanel"
               @edit-automation="onEditAutomationFromPanel"
               @create-automation="onCreateAutomationFromPanel"
+              @automations-updated="sidebarThreadTreeRef?.setAutomationMaps($event)"
             />
           </template>
           <template v-else-if="isApiProxyRoute"><ApiProxyPanel /></template>
           <template v-else-if="isSettingsRoute"><SettingsPanel>
-<template #accounts><AccountPanel :accounts="accounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
+<template #accounts><AccountPanel :accounts="displayAccounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
   @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount" />
-<AccountActivation :key="displayTimeZonePreference" :accounts="accounts" />
-<details class="settings-optional-provider" :open="selectedProvider !== 'codex'"><summary>{{ t('其他连接（可选）') }}<span v-if="selectedProvider !== 'codex'"> · {{ selectedProvider }}</span></summary>              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the API provider for the Codex backend')">
-                <span class="sidebar-settings-label">{{ t('Provider') }}</span>
-                <AppSelect
-                  class="sidebar-settings-provider-dropdown"
-                  :model-value="selectedProvider"
-                  :options="providerDropdownOptions"
-                  :placeholder="t('Provider')"
-                  :disabled="freeModeLoading"
-                  menu-align="end"
-                  @update:model-value="onProviderChange"
-                />
-              </div>
-              <div v-if="providerError" class="sidebar-settings-row sidebar-settings-error">
-                <span>{{ t(providerError) }}</span>
-                <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, providerError)">{{ t('Send feedback') }}</a>
-              </div>
-              <div v-if="selectedProvider === 'openrouter'" class="sidebar-settings-row sidebar-settings-row--input">
-                <div class="sidebar-settings-provider-info">
-                  <span class="sidebar-settings-label">{{ t('OpenRouter API key') }}</span>
-                  <a
-                    class="sidebar-settings-provider-link"
-                    href="https://openrouter.ai/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >{{ t('Get API key') }}</a>
-                </div>
-                <div class="sidebar-settings-key-group">
-                  <template v-if="freeModeHasCustomKey && !freeModeCustomKey">
-                    <span class="sidebar-settings-key-masked">{{ freeModeCustomKeyMasked }}</span>
-                    <button
-                      class="sidebar-settings-key-clear"
-                      type="button"
-                      :disabled="freeModeCustomKeySaving"
-                      :title="t('Remove custom key, use community keys')"
-                      @click="clearFreeModeCustomKey"
-                    >&#x2715;</button>
-                  </template>
-                  <template v-else>
-                    <input
-                      v-model="freeModeCustomKey"
-                      class="sidebar-settings-key-input"
-                      type="password"
-                      :placeholder="t('sk-or-v1-... (optional, uses free keys if empty)')"
-                      @keydown.enter="saveFreeModeCustomKey"
-                    />
-                    <button
-                      class="sidebar-settings-key-save"
-                      type="button"
-                      :disabled="freeModeCustomKeySaving || !freeModeCustomKey.trim()"
-                      @click="saveFreeModeCustomKey"
-                    >{{ freeModeCustomKeySaving ? '...' : t('Set') }}</button>
-                  </template>
-                </div>
-                <div class="sidebar-settings-row sidebar-settings-row--select" style="margin-top: 4px; padding: 0">
-                  <span class="sidebar-settings-label">{{ t('API format') }}</span>
-                  <div class="sidebar-settings-segmented" role="group" :aria-label="t('OpenRouter API format')">
-                    <button
-                      type="button"
-                      class="sidebar-settings-segmented-option"
-                      :class="{ 'is-active': openRouterWireApi === 'responses' }"
-                      :disabled="freeModeCustomKeySaving || freeModeLoading"
-                      @click="setOpenRouterWireApi('responses')"
-                    >
-                      Responses
-                    </button>
-                    <button
-                      type="button"
-                      class="sidebar-settings-segmented-option"
-                      :class="{ 'is-active': openRouterWireApi === 'chat' }"
-                      :disabled="freeModeCustomKeySaving || freeModeLoading"
-                      @click="setOpenRouterWireApi('chat')"
-                    >
-                      Completions
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div v-if="selectedProvider === 'opencode-zen'" class="sidebar-settings-row sidebar-settings-row--input">
-                <div class="sidebar-settings-provider-info">
-                  <span class="sidebar-settings-label">{{ t('OpenCode Zen API key') }}</span>
-                  <a
-                    class="sidebar-settings-provider-link"
-                    href="https://opencode.ai/auth"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >{{ t('Get API key') }}</a>
-                </div>
-                <div class="sidebar-settings-key-group">
-                  <input
-                    v-model="opencodeZenKey"
-                    class="sidebar-settings-key-input"
-                    type="password"
-                    :placeholder="t('sk-...')"
-                    @keydown.enter="saveOpencodeZen"
-                  />
-                  <button
-                    class="sidebar-settings-key-save"
-                    type="button"
-                    :disabled="freeModeCustomKeySaving || !opencodeZenKey.trim()"
-                    @click="saveOpencodeZen"
-                  >{{ freeModeCustomKeySaving ? '...' : t('Save') }}</button>
-                </div>
-              </div>
-              <div v-if="selectedProvider === 'custom'" class="sidebar-settings-row sidebar-settings-row--input">
-                <span class="sidebar-settings-label">{{ t('Custom endpoint URL') }}</span>
-                <div class="sidebar-settings-key-group">
-                  <input
-                    v-model="customEndpointUrl"
-                    class="sidebar-settings-key-input"
-                    type="url"
-                    :placeholder="t('https://api.example.com/v1')"
-                    @keydown.enter="saveCustomEndpoint"
-                  />
-                </div>
-                <span class="sidebar-settings-label" style="margin-top: 4px">{{ t('API key') }}</span>
-                <div class="sidebar-settings-key-group">
-                  <input
-                    v-model="customEndpointKey"
-                    class="sidebar-settings-key-input"
-                    type="password"
-                    :placeholder="t('Bearer token (optional)')"
-                    @keydown.enter="saveCustomEndpoint"
-                  />
-                  <button
-                    class="sidebar-settings-key-save"
-                    type="button"
-                    :disabled="freeModeCustomKeySaving || !customEndpointUrl.trim()"
-                    @click="saveCustomEndpoint"
-                  >{{ freeModeCustomKeySaving ? '...' : t('Save') }}</button>
-                </div>
-                <div class="sidebar-settings-row sidebar-settings-row--select" style="margin-top: 4px; padding: 0">
-                  <span class="sidebar-settings-label">{{ t('API format') }}</span>
-                  <div class="sidebar-settings-segmented" role="group" :aria-label="t('Custom endpoint API format')">
-                    <button
-                      type="button"
-                      class="sidebar-settings-segmented-option"
-                      :class="{ 'is-active': customEndpointWireApi === 'responses' }"
-                      @click="customEndpointWireApi = 'responses'"
-                    >
-                      Responses
-                    </button>
-                    <button
-                      type="button"
-                      class="sidebar-settings-segmented-option"
-                      :class="{ 'is-active': customEndpointWireApi === 'chat' }"
-                      @click="customEndpointWireApi = 'chat'"
-                    >
-                      Completions
-                    </button>
-                  </div>
-                </div>
-              </div>
-</details></template>
-<template #general><ConversationDefaults :value="webDefaultChoice" :remember="webPreferenceState.remember" :models="availableModels" :provider="webDefaultsProvider" :error="webPreferenceError" @save="configureWebDefaults" />              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the interface language for the app.')">
+<CustomConnections @changed="onCustomConnectionsChanged" />
+<AccountActivation :key="displayTimeZonePreference" :accounts="accounts" /></template>
+<template #general><div class="settings-form-grid"><ConversationDefaults :value="webDefaultChoice" :remember="webPreferenceState.remember" :models="availableModels" :provider="webDefaultsProvider" :error="webPreferenceError" @save="configureWebDefaults" />              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the interface language for the app.')">
                 <span class="sidebar-settings-label">{{ t('UI language') }}</span>
                 <AppSelect
                   class="sidebar-settings-provider-dropdown"
@@ -409,7 +271,7 @@
                   @update:model-value="setUiLanguage($event as 'en' | 'zh-CN')"
                 />
               </div>
-              <div class="sidebar-settings-row sidebar-settings-timezone">
+              <div class="sidebar-settings-row sidebar-settings-timezone settings-field-roomy">
                 <span class="sidebar-settings-label">{{ t('Display timezone') }}</span>
                 <AppSelect
                   :model-value="displayTimeZonePreference"
@@ -421,89 +283,77 @@
                   menu-align="end"
                   @update:model-value="onDisplayTimeZoneChange"
                 />
-                <p v-if="displayTimeZoneError" class="sidebar-timezone-error" role="alert">{{ t(displayTimeZoneError) }}</p>
               </div>
+              <p v-if="displayTimeZoneError" class="sidebar-timezone-error settings-field-wide" role="alert">{{ t(displayTimeZoneError) }}</p>
+</div></template>
+<template #appearance>
+<div class="settings-form-grid">
+  <div class="sidebar-settings-row sidebar-settings-row--select settings-field-short" :title="t(SETTINGS_HELP.appearance)">
+    <span class="sidebar-settings-label">{{ t('主题') }}</span>
+    <AppSelect
+      :model-value="darkMode"
+      :options="appearanceOptions"
+      :aria-label="t('主题')"
+      menu-align="end"
+      @update:model-value="onDarkModeChange"
+    />
+  </div>
+  <div class="sidebar-settings-row sidebar-settings-row--select settings-field-short" :title="t(SETTINGS_HELP.chatWidth)">
+    <span class="sidebar-settings-label">{{ t('Chat width') }}</span>
+    <AppSelect
+      :model-value="chatWidth"
+      :options="chatWidthOptions"
+      :aria-label="t('Chat width')"
+      menu-align="end"
+      @update:model-value="onChatWidthChange"
+    />
+  </div>
+  <WebUiBrandingSettings />
+</div>
 </template>
-<template #appearance>              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.appearance)" @click="cycleDarkMode">
-                <span class="sidebar-settings-label">{{ t('Appearance') }}</span>
-                <span class="sidebar-settings-value">{{ darkMode === 'system' ? t('System') : darkMode === 'dark' ? t('Dark') : t('Light') }}</span>
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.chatWidth)" @click="cycleChatWidth">
-                <span class="sidebar-settings-label">{{ t('Chat width') }}</span>
-                <span class="sidebar-settings-value">{{ t(chatWidthLabel) }}</span>
-              </button>
-</template>
-<template #input>              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.sendWithEnter)" @click="toggleSendWithEnter">
-                <span class="sidebar-settings-label">{{ t('Require ⌘ + enter to send') }}</span>
-                <span class="sidebar-settings-toggle" :class="{ 'is-on': !sendWithEnter }" />
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.dictationClickToToggle)" @click="toggleDictationClickToToggle">
-                <span class="sidebar-settings-label">{{ t('Click to toggle dictation') }}</span>
-                <span class="sidebar-settings-toggle" :class="{ 'is-on': dictationClickToToggle }" />
-              </button>
-              <button class="sidebar-settings-row" type="button" :title="t(SETTINGS_HELP.dictationAutoSend)" @click="toggleDictationAutoSend">
-                <span class="sidebar-settings-label">{{ t('Auto send dictation') }}</span>
-                <span class="sidebar-settings-toggle" :class="{ 'is-on': dictationAutoSend }" />
-              </button>
-              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t(SETTINGS_HELP.dictationLanguage)">
-                <span class="sidebar-settings-label">{{ t('Dictation language') }}</span>
-                <AppSelect
-                  class="sidebar-settings-language-dropdown"
-                  :model-value="dictationLanguage"
-                  :options="dictationLanguageOptions"
-                  :placeholder="t('Auto-detect')"
-                  open-direction="up"
-                  :enable-search="true"
-                  :search-placeholder="t('Search language...')"
-                  @update:model-value="onDictationLanguageChange"
-                />
-              </div>
+<template #input>
+  <div class="settings-form-grid">
+    <AppSwitch class="settings-switch-row" :model-value="!sendWithEnter" :title="t(SETTINGS_HELP.sendWithEnter)" @change="toggleSendWithEnter">{{ t('Require ⌘ + enter to send') }}</AppSwitch>
+    <div class="sidebar-settings-row sidebar-settings-row--select" :title="t(SETTINGS_HELP.dictationLanguage)">
+      <span class="sidebar-settings-label">{{ t('Dictation language') }}</span>
+      <AppSelect
+        :model-value="dictationLanguage"
+        :options="dictationLanguageOptions"
+        :placeholder="t('Auto-detect')"
+        open-direction="up"
+        enable-search
+        :search-placeholder="t('Search language...')"
+        @update:model-value="onDictationLanguageChange"
+      />
+    </div>
+    <AppSwitch class="settings-switch-row" :model-value="dictationClickToToggle" :title="t(SETTINGS_HELP.dictationClickToToggle)" @change="toggleDictationClickToToggle">{{ t('Click to toggle dictation') }}</AppSwitch>
+    <AppSwitch class="settings-switch-row" :model-value="dictationAutoSend" :title="t(SETTINGS_HELP.dictationAutoSend)" @change="toggleDictationAutoSend">{{ t('Auto send dictation') }}</AppSwitch>
+  </div>
 </template>
 <template #integrations>
-<AppButton @click="openDirectory()">{{ t('插件 / 技能 / MCP') }}</AppButton><NotificationSettings :key="displayTimeZonePreference" />              <button class="sidebar-settings-row" type="button" aria-live="polite" @click="isTelegramConfigOpen = !isTelegramConfigOpen">
-                <span class="sidebar-settings-label">{{ t('Telegram') }}</span>
-                <span class="sidebar-settings-value">{{ t(telegramStatusText) }}</span>
-              </button>
-              <div v-if="isTelegramConfigOpen" class="sidebar-settings-telegram-panel">
-                <label class="sidebar-settings-field">
-                  <span class="sidebar-settings-field-label">{{ t('Bot token') }}</span>
-                  <input
-                    v-model="telegramBotTokenDraft"
-                    class="sidebar-settings-input"
-                    type="password"
-                    placeholder="123456:ABCDEF"
-                    autocomplete="off"
-                    spellcheck="false"
-                  >
-                </label>
-                <label class="sidebar-settings-field">
-                  <span class="sidebar-settings-field-label">{{ t('Allowed Telegram user IDs') }}</span>
-                  <textarea
-                    v-model="telegramAllowedUserIdsDraft"
-                    class="sidebar-settings-textarea"
-                    rows="3"
-                    placeholder="123456789&#10;987654321"
-                    spellcheck="false"
-                  />
-                </label>
-                <div class="sidebar-settings-field-help">
-                  {{ t('Put one Telegram user ID per line or separate them with commas. Use `*` to allow all Telegram users. Unauthorized users will see their own ID in the rejection message so they can copy it here.') }}
-                </div>
-                <div v-if="telegramConfigError" class="sidebar-settings-telegram-error">
-                  <span>{{ t(telegramConfigError) }}</span>
-                  <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, telegramConfigError)">{{ t('Send feedback') }}</a>
-                </div>
-                <div class="sidebar-settings-telegram-actions">
-                  <button
-                    class="sidebar-settings-telegram-save"
-                    type="button"
-                    :disabled="isTelegramSaving"
-                    @click="saveTelegramConfig"
-                  >
-                    {{ isTelegramSaving ? t('Saving…') : t('Save Telegram config') }}
-                  </button>
-                </div>
-              </div>
+  <div class="settings-integrations-grid">
+    <NotificationSettings :key="displayTimeZonePreference" />
+    <section class="notification-settings settings-integration-card">
+      <h3>Telegram</h3>
+      <AppSwitch v-model="telegramNotificationsEnabledDraft" :disabled="isTelegramSaving">{{ t('启用Telegram通知') }}</AppSwitch>
+      <label>{{ t('Bot token') }}<input v-model="telegramBotTokenDraft" class="app-input" type="password" placeholder="123456:ABCDEF" autocomplete="off" spellcheck="false" :disabled="isTelegramSaving" /></label>
+      <div class="notification-message-field"><label>{{ t('Allowed Telegram user IDs') }}<textarea v-model="telegramAllowedUserIdsDraft" class="app-input" rows="5" placeholder="123456789&#10;987654321&#10;*" spellcheck="false" :disabled="isTelegramSaving" /></label></div>
+      <div class="notification-actions">
+        <p v-if="telegramConfigError" class="account-panel-error" role="alert">{{ t(telegramConfigError) }}</p>
+        <AppButton :busy="isTelegramSaving" @click="saveTelegramConfig()">{{ t('保存Telegram设置') }}</AppButton>
+        <AppButton :disabled="isTelegramSaving || !telegramNotificationsEnabledDraft" @click="testTelegramNotification">{{ t('发送测试通知') }}</AppButton>
+        <span v-if="telegramNotice" role="status">{{ t(telegramNotice) }}</span>
+      </div>
+      <div class="notification-quiet">
+        <AppSwitch v-model="telegramQuietDraft.quietEnabled" :disabled="isTelegramSaving" @change="saveTelegramQuietHours">{{ t('免打扰') }}</AppSwitch>
+        <div class="notification-hours">
+          <input v-model="telegramQuietDraft.quietStart" class="app-input" :aria-label="t('免打扰开始')" placeholder="22:00" maxlength="5" :disabled="isTelegramSaving || !telegramQuietDraft.quietEnabled" @change="saveTelegramQuietHours" />
+          <span>{{ t('至') }}</span>
+          <input v-model="telegramQuietDraft.quietEnd" class="app-input" :aria-label="t('免打扰结束')" placeholder="08:00" maxlength="5" :disabled="isTelegramSaving || !telegramQuietDraft.quietEnabled" @change="saveTelegramQuietHours" />
+        </div>
+      </div>
+    </section>
+  </div>
 </template>
 <template #about><div class="settings-about-versions"><div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div><p>{{ t('工作树') }} {{ worktreeName }}</p>
 <p v-if="runtimeCapabilities && runtimeCapabilities.appVersion !== appVersion" role="alert">{{ t('前端版本') }} {{ appVersion }} {{ t('与服务端版本不同，请刷新页面。') }}</p></div>
@@ -585,15 +435,9 @@
                         </button>
                       </div>
                       <div class="new-thread-open-folder-actions">
-                        <label class="new-thread-open-folder-toggle">
-                          <input
-                            v-model="showHiddenFolders"
-                            class="new-thread-open-folder-toggle-input"
-                            type="checkbox"
-                            @change="onToggleHiddenFolders"
-                          />
-                          <span>{{ t('Show hidden folders') }}</span>
-                        </label>
+                        <AppSwitch class="new-thread-open-folder-toggle" v-model="showHiddenFolders"
+                            @change="onToggleHiddenFolders"><span>{{ t('Show hidden folders') }}</span>
+                        </AppSwitch>
                         <button
                           class="new-thread-folder-action"
                           :class="{ 'new-thread-folder-action-primary': isCreateFolderOpen }"
@@ -787,7 +631,6 @@
                     :has-more-persisted-above="hasMoreOlderMessages"
                     :is-loading-persisted-above="isLoadingOlderMessages"
                     :load-earlier-messages="loadOlderMessages"
-                    :answer-questions="answerAsyncQuestions"
                     @open-task="onOpenRelatedTask"
                     @fork-thread="onForkThreadFromMessage"
                     @rollback="onRollback"
@@ -839,6 +682,12 @@
                     :request-count="selectedThreadServerRequests.length"
                     :has-queue-above="selectedThreadQueuedMessages.length > 0"
                     @respond-server-request="onRespondServerRequest"
+                  />
+                  <AsyncQuestionDock
+                    :key="selectedThreadId"
+                    :messages="messages"
+                    :thread-id="selectedThreadId"
+                    :answer="answerAsyncQuestions"
                   />
                   <ThreadComposer
                     v-if="!selectedThreadPendingRequest || isAsyncUserInputRequest(selectedThreadPendingRequest)"
@@ -1009,12 +858,19 @@
 </template>
 
 <script setup lang="ts">
+import CustomConnections from './components/accounts/CustomConnections.vue'
+import { useCustomConnections } from './composables/useCustomConnections'
+import { invalidateModelCatalog } from './api/modelCatalog'
+import AppSwitch from './components/common/AppSwitch.vue'
 import type { UiProjectGroup } from './types/codex'
 import { useTransientNotice } from './composables/useTransientNotice'
 import { accountDisplayName } from './accountDisplay'
 import AppDialog from './components/common/AppDialog.vue'
 import NotificationSettings from './components/settings/NotificationSettings.vue'
 import AccountActivation from './components/settings/AccountActivation.vue'
+import WebUiBrandingSettings from './components/settings/WebUiBrandingSettings.vue'
+import { useWebUiBranding } from './composables/useWebUiBranding'
+import { webUiDocumentTitle } from './webUiBranding'
 import ConversationDefaults from './components/settings/ConversationDefaults.vue'
 import SettingsPanel from './components/settings/SettingsPanel.vue'
 import IconTablerFilePencil from './components/icons/IconTablerFilePencil.vue'
@@ -1040,6 +896,7 @@ import { useRoute, useRouter } from 'vue-router'
 import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
+import AsyncQuestionDock from './components/content/AsyncQuestionDock.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
 import ThreadGoalCard from './components/content/ThreadGoalCard.vue'
 import ThreadTasksPanel from './components/content/ThreadTasksPanel.vue'
@@ -1120,6 +977,14 @@ const DirectoryHub = defineAsyncComponent(() => import('./components/content/Dir
 const ApiProxyPanel = defineAsyncComponent(() => import('./components/api-proxy/ApiProxyPanel.vue'))
 const AutomationsPanel = defineAsyncComponent(() => import('./components/content/AutomationsPanel.vue'))
 const { t, uiLanguage, uiLanguageOptions, setUiLanguage } = useUiLanguage()
+const { state: customConnections, active: activeCustomConnection, load: loadCustomConnections } = useCustomConnections()
+const displayAccounts = computed(() => activeCustomConnection.value ? accounts.value.map(account => ({ ...account, isActive: false })) : accounts.value)
+const executionAccounts = computed(() => [...accounts.value, ...customConnections.value.connections.filter(row => row.wireApi === 'responses').map(row => ({ storageId: row.storageId, alias: row.alias, email: null, accountId: row.baseUrl }))])
+async function onCustomConnectionsChanged(): Promise<void> {
+  invalidateModelCatalog()
+  await loadCustomConnections()
+  await refreshAll({ includeSelectedThreadMessages: false })
+}
 const displayTimeZoneError = ref('')
 const isSavingDisplayTimeZone = ref(false)
 const displayTimeZoneOptions = computed(() => [
@@ -1141,6 +1006,11 @@ async function onDisplayTimeZoneChange(value: string): Promise<void> {
       body: JSON.stringify({ ...current.data.settings, timezone: value === 'system' ? browserTimeZone() : value }),
     })
     if (!response.ok) throw new Error('同步激活计划时区失败，请重试。')
+    const telegramResponse = await fetch('/codex-api/telegram/notification-preferences', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timezone: value === 'system' ? browserTimeZone() : value }),
+    })
+    if (!telegramResponse.ok) throw new Error('显示时区保存失败。')
     setDisplayTimeZone(value)
   } catch (cause) {
     displayTimeZoneError.value = cause instanceof Error ? cause.message : '显示时区保存失败。'
@@ -1390,12 +1260,15 @@ const {
   stopPolling,
   primeSelectedThread,
   rollbackSelectedThread,
-} = useDesktopState()
+} = useDesktopState({
+  isThreadVisible: (threadId) => route.name === 'thread' && routeThreadId.value === threadId,
+})
 
 const route = useRoute()
 const router = useRouter()
 const { isMobile } = useMobile()
 type SidebarThreadTreeExposed = {
+  setAutomationMaps: (maps: { thread: Record<string, UiThreadAutomation[]>; project: Record<string, UiThreadAutomation[]> }) => void
   openAutomationEditorFromPanel: (payload: AutomationEditRequest) => void
   openAutomationCreatorFromPanel: () => void
 }
@@ -1670,8 +1543,10 @@ const customEndpointKey = ref('')
 const customEndpointWireApi = ref<'responses' | 'chat'>('responses')
 const openRouterWireApi = ref<'responses' | 'chat'>('responses')
 const opencodeZenKey = ref('')
-const isTelegramConfigOpen = ref(false)
+const telegramNotice = useTransientNotice()
 const telegramBotTokenDraft = ref('')
+const telegramNotificationsEnabledDraft = ref(false)
+const telegramQuietDraft = ref({ quietEnabled: false, quietStart: '22:00', quietEnd: '08:00' })
 const telegramAllowedUserIdsDraft = ref('')
 const telegramConfigError = ref('')
 const isTelegramSaving = ref(false)
@@ -1793,7 +1668,7 @@ const contentTitle = computed(() => {
   if (isSettingsRoute.value) return t('Settings')
   if (isApiProxyRoute.value) return t('API Proxy')
   if (isAutomationsRoute.value) return t('Automations')
-  if (isSkillsRoute.value) return '插件 / 技能 / MCP'
+  if (isSkillsRoute.value) return ''
   if (isHomeRoute.value) return t('Start new thread')
   return selectedThread.value?.title ?? t('Choose a thread')
 })
@@ -1801,12 +1676,14 @@ const browserHostName =
   typeof window !== 'undefined'
     ? (window.location.hostname || window.location.host || 'codexui')
     : 'codexui'
+const { branding } = useWebUiBranding()
 const pageTitle = computed(() => {
   const threadTitle = selectedThread.value?.title?.trim() ?? ''
-  return threadTitle || browserHostName
+  return webUiDocumentTitle(branding.value, route.name === 'thread' ? threadTitle : '', browserHostName)
 })
 const filteredMessages = computed(() =>
   messages.value.filter((message) => {
+    if (message.questions?.length) return false
     const type = normalizeMessageType(message.messageType, message.role)
     if (type === 'worked') return true
     if (type === 'turnActivity.live' || type === 'turnError.live' || type === 'agentReasoning.live') return false
@@ -2129,7 +2006,15 @@ const existingFolderFilteredEntries = computed(() => {
   )
 })
 const darkModeMediaQuery = typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: dark)') : null
-const chatWidthLabel = computed(() => t(CHAT_WIDTH_PRESETS[chatWidth.value].label))
+const appearanceOptions = computed(() => [
+  { value: 'system', label: t('自动') },
+  { value: 'light', label: t('Light') },
+  { value: 'dark', label: t('Dark') },
+])
+const chatWidthOptions = computed(() => Object.entries(CHAT_WIDTH_PRESETS).map(([value, preset]) => ({
+  value,
+  label: t(preset.label),
+})))
 const terminalShortcutLabel = computed(() => {
   if (typeof navigator !== 'undefined' && /mac|iphone|ipad|ipod/i.test(navigator.platform)) {
     return '⌘J'
@@ -2208,6 +2093,7 @@ onMounted(() => {
   void refreshDefaultProjectName()
   void refreshTelegramConfig()
   void refreshTelegramStatus()
+  void loadCustomConnections().catch(() => {})
   void loadFreeModeStatus({ refreshModels: false })
   void refreshThreadTerminalStatus()
   void refreshTerminalQuickCommands()
@@ -2378,6 +2264,8 @@ async function refreshTelegramConfig(): Promise<void> {
   try {
     const config = await getTelegramConfig()
     telegramBotTokenDraft.value = config.botToken
+    telegramNotificationsEnabledDraft.value = config.notificationsEnabled
+    telegramQuietDraft.value = { quietEnabled: config.quietEnabled, quietStart: config.quietStart, quietEnd: config.quietEnd }
     telegramAllowedUserIdsDraft.value = config.allowedUserIds.map((value) => String(value)).join('\n')
     telegramConfigError.value = ''
   } catch (error) {
@@ -2397,31 +2285,70 @@ function parseTelegramAllowedUserIdsInput(value: string): Array<number | '*'> {
   return allowAllUsers ? ['*', ...normalizedUserIds] : normalizedUserIds
 }
 
-async function saveTelegramConfig(): Promise<void> {
+async function saveTelegramConfig(showNotice = true): Promise<boolean> {
+  if (isTelegramSaving.value) return false
   const botToken = telegramBotTokenDraft.value.trim()
   const allowedUserIds = parseTelegramAllowedUserIdsInput(telegramAllowedUserIdsDraft.value)
   if (!botToken) {
     telegramConfigError.value = t('Telegram bot token is required.')
-    return
+    return false
   }
   if (allowedUserIds.length === 0) {
     telegramConfigError.value = t('At least one allowed Telegram user ID or * is required.')
-    return
+    return false
   }
 
   isTelegramSaving.value = true
   telegramConfigError.value = ''
+  telegramNotice.value = ''
   try {
-    await configureTelegramBot(botToken, allowedUserIds)
+    await configureTelegramBot(botToken, allowedUserIds, telegramNotificationsEnabledDraft.value, { ...telegramQuietDraft.value, timezone: displayTimeZone() })
     telegramAllowedUserIdsDraft.value = allowedUserIds.map((value) => String(value)).join('\n')
     await Promise.all([
       refreshTelegramConfig(),
       refreshTelegramStatus(),
     ])
-    window.alert(t('Telegram bot configured. Only allowlisted Telegram users can use the bridge.'))
+    if (showNotice) telegramNotice.value = '已保存'
+    return true
   } catch (error) {
     telegramConfigError.value = error instanceof Error ? error.message : t('Failed to connect Telegram bot')
     void refreshTelegramStatus()
+    return false
+  } finally {
+    isTelegramSaving.value = false
+  }
+}
+
+async function saveTelegramQuietHours(): Promise<void> {
+  if (isTelegramSaving.value) return
+  isTelegramSaving.value = true
+  telegramConfigError.value = ''
+  try {
+    const response = await fetch('/codex-api/telegram/notification-preferences', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...telegramQuietDraft.value, timezone: displayTimeZone() }),
+    })
+    const payload = await response.json()
+    if (!response.ok) throw new Error(payload.error || '保存失败')
+  } catch (error) {
+    telegramConfigError.value = error instanceof Error ? error.message : '保存失败'
+  } finally {
+    isTelegramSaving.value = false
+  }
+}
+
+async function testTelegramNotification(): Promise<void> {
+  if (!telegramNotificationsEnabledDraft.value || !await saveTelegramConfig(false)) return
+  isTelegramSaving.value = true
+  telegramConfigError.value = ''
+  telegramNotice.value = ''
+  try {
+    const response = await fetch('/codex-api/telegram/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language: uiLanguage.value }) })
+    const payload = await response.json()
+    if (!response.ok) throw new Error(payload.error || '测试通知发送失败。')
+    telegramNotice.value = '通知已发送'
+  } catch (error) {
+    telegramConfigError.value = error instanceof Error ? error.message : '测试通知发送失败。'
   } finally {
     isTelegramSaving.value = false
   }
@@ -2755,6 +2682,8 @@ async function onSwitchAccount(storageId: string): Promise<void> {
   isSwitchingAccounts.value = true
   try {
     const switched = await switchAccount(storageId, activeAccountStorageId.value, selectedThreadId.value || undefined)
+    await loadCustomConnections()
+    invalidateModelCatalog()
     const nextActiveAccount = switched.account
     accounts.value = accounts.value.map((account) => (
       account.storageId === storageId
@@ -4530,15 +4459,19 @@ function toggleSendWithEnter(): void {
 function cycleDarkMode(): void {
   const order: Array<'system' | 'light' | 'dark'> = ['dark', 'light', 'system']
   const idx = order.indexOf(darkMode.value)
-  darkMode.value = order[(idx + 1) % order.length]
+  onDarkModeChange(order[(idx + 1) % order.length])
+}
+
+function onDarkModeChange(value: string): void {
+  if (value !== 'system' && value !== 'light' && value !== 'dark') return
+  darkMode.value = value
   window.localStorage.setItem(DARK_MODE_KEY, darkMode.value)
   applyDarkMode()
 }
 
-function cycleChatWidth(): void {
-  const order: ChatWidthMode[] = ['standard', 'wide', 'extra-wide']
-  const idx = order.indexOf(chatWidth.value)
-  chatWidth.value = order[(idx + 1) % order.length]
+function onChatWidthChange(value: string): void {
+  if (value !== 'standard' && value !== 'wide' && value !== 'extra-wide') return
+  chatWidth.value = value
   window.localStorage.setItem(CHAT_WIDTH_KEY, chatWidth.value)
 }
 

@@ -701,11 +701,25 @@ function hasOptimisticUserMessages(messages: UiMessage[]): boolean {
   return messages.some(isOptimisticUserMessage)
 }
 
+function comparableImageSource(value: string): string {
+  try {
+    const url = new URL(value, 'http://localhost')
+    if (url.pathname === '/codex-local-image') return url.searchParams.get('path') || value
+  } catch {}
+  return value
+}
+
+// Local images also become file chips in the native echo; they are not extra attachments.
+function nonImageAttachmentPaths(message: UiMessage): string[] {
+  const imagePaths = new Set((message.images ?? []).map(comparableImageSource))
+  return (message.fileAttachments ?? []).map(file => file.path).filter(path => !imagePaths.has(path))
+}
+
 function hasEquivalentUserMessage(target: UiMessage, messages: UiMessage[]): boolean {
   if (target.role !== 'user') return false
   const targetText = normalizeMessageText(target.text)
-  const targetImages = Array.isArray(target.images) ? target.images : []
-  const targetFileCount = Array.isArray(target.fileAttachments) ? target.fileAttachments.length : 0
+  const targetImages = (target.images ?? []).map(comparableImageSource)
+  const targetFiles = nonImageAttachmentPaths(target)
   const targetSkillCount = Array.isArray(target.skills) ? target.skills.length : 0
 
   return messages.some((message) => {
@@ -714,13 +728,13 @@ function hasEquivalentUserMessage(target: UiMessage, messages: UiMessage[]): boo
     if (target.clientUserMessageId && message.clientUserMessageId) return target.clientUserMessageId === message.clientUserMessageId
     if (target.userMessageOrdinal !== undefined && message.userMessageOrdinal !== undefined && target.userMessageOrdinal !== message.userMessageOrdinal) return false
     const messageText = normalizeMessageText(message.text)
-    const messageImages = Array.isArray(message.images) ? message.images : []
-    const messageFileCount = Array.isArray(message.fileAttachments) ? message.fileAttachments.length : 0
+    const messageImages = (message.images ?? []).map(comparableImageSource)
+    const messageFiles = nonImageAttachmentPaths(message)
     const messageSkillCount = Array.isArray(message.skills) ? message.skills.length : 0
     return (
       messageText === targetText &&
       areStringArraysEqual(messageImages, targetImages) &&
-      messageFileCount === targetFileCount &&
+      areStringArraysEqual(messageFiles, targetFiles) &&
       messageSkillCount === targetSkillCount
     )
   })
@@ -1350,7 +1364,7 @@ export function filterGroupsByWorkspaceRoots(
   return orderGroupsByWorkspaceProjectOrder(filteredGroups, rootsState, duplicateLeafNames)
 }
 
-export function useDesktopState() {
+export function useDesktopState(options: { isThreadVisible?: (threadId: string) => boolean } = {}) {
   const webPreferences = useWebConversationPreferences(typeof window !== 'undefined' ? window.localStorage : undefined)
   const webPreferenceState = webPreferences.state
   const webPreferenceError = webPreferences.error
@@ -2283,9 +2297,12 @@ export function useDesktopState() {
     pendingServerRequestsByThreadId.value = nextPending
   }
 
+  const completionAcknowledgements = new Map<string, string>()
+
   function markThreadAsRead(threadId: string): void {
     const token = eventUnreadByThreadId.value[threadId]
-    if (!token) return
+    if (!token || completionAcknowledgements.get(threadId) === token) return
+    completionAcknowledgements.set(threadId, token)
     void fetch('/codex-api/thread-completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2296,7 +2313,9 @@ export function useDesktopState() {
         if (completionChangesDuringLoad) completionChangesDuringLoad[threadId] = null
         applyThreadFlags()
       }
-    }).catch(() => {})
+    }).catch(() => {}).finally(() => {
+      if (completionAcknowledgements.get(threadId) === token) completionAcknowledgements.delete(threadId)
+    })
   }
 
   function setTurnSummaryForThread(threadId: string, summary: TurnSummaryState | null): void {
@@ -4848,7 +4867,7 @@ export function useDesktopState() {
     if ([...(persistedMessagesByThreadId.value[reply.threadId] ?? []), ...detail.messages, ...turnMessages].some(message => message.questionReply && questionRefKey(message.questionReply) === key)) return
     setPersistedMessagesForThread(reply.threadId, mergeMessages(persistedMessagesByThreadId.value[reply.threadId] ?? [], detail.messages, { preserveMissing: true }))
     await startTurnForThread(reply.threadId, buildQuestionReply(question, reply.answers), [], [], [], undefined, 'steer',
-      { id: `question:${reply.threadId}:${reply.turnId}:${question.questionOrdinal ?? question.id}`, requireConfirmed: true })
+      { id: createDeliveryId(), requireConfirmed: true })
   }
 
   async function sendMessageToSelectedThread(
@@ -5518,6 +5537,11 @@ export function useDesktopState() {
           if (token) eventUnreadByThreadId.value = { ...eventUnreadByThreadId.value, [threadId]: token }
           else eventUnreadByThreadId.value = omitKey(eventUnreadByThreadId.value, threadId)
           applyThreadFlags()
+          if (token && selectedThreadId.value === threadId
+            && typeof document !== 'undefined' && document.visibilityState === 'visible'
+            && options.isThreadVisible?.(threadId)) {
+            markThreadAsRead(threadId)
+          }
         }
         return
       }

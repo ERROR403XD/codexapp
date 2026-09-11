@@ -282,6 +282,11 @@ export type TelegramStatus = {
 
 export type TelegramConfig = {
   botToken: string
+  notificationsEnabled: boolean
+  quietEnabled: boolean
+  quietStart: string
+  quietEnd: string
+  timezone: string
   allowedUserIds: Array<number | '*'>
 }
 
@@ -2220,7 +2225,37 @@ function normalizeDirectoryApp(value: unknown, catalogRank = 0): DirectoryAppInf
   }
 }
 
+type PluginPageCache = { rows: DirectoryPluginSummary[]; warnings: string[]; expiresAt: number }
+const pluginPageCache = new Map<string, PluginPageCache>()
+const pluginPageFlights = new Map<string, Promise<PluginPageCache>>()
 export async function listDirectoryPlugins(cwds?: string[], forceRefetch = false, onWarnings?: (messages: string[]) => void): Promise<DirectoryPluginSummary[]> {
+  const key = JSON.stringify([...(cwds || [])].sort())
+  const cached = pluginPageCache.get(key)
+  if (cached && !forceRefetch && Date.now() < cached.expiresAt) {
+    onWarnings?.(cached.warnings)
+    return cached.rows
+  }
+  let work = pluginPageFlights.get(key)
+  if (!work) {
+    work = (async () => {
+      let warnings: string[] = []
+      const rows = await fetchDirectoryPlugins(cwds, forceRefetch, value => { warnings = value })
+      const next = new Date()
+      next.setHours(2, 0, 0, 0)
+      if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
+      const result = { rows, warnings, expiresAt: next.getTime() }
+      if (pluginPageCache.size >= 12) pluginPageCache.delete(pluginPageCache.keys().next().value!)
+      pluginPageCache.set(key, result)
+      return result
+    })().finally(() => pluginPageFlights.delete(key))
+    pluginPageFlights.set(key, work)
+  }
+  const result = await work
+  onWarnings?.(result.warnings)
+  return result.rows
+}
+
+async function fetchDirectoryPlugins(cwds?: string[], forceRefetch = false, onWarnings?: (messages: string[]) => void): Promise<DirectoryPluginSummary[]> {
   const params: Record<string, unknown> = {}
   if (cwds && cwds.length > 0) params.cwds = cwds
   if (forceRefetch) params.forceRefetch = true
@@ -3205,6 +3240,8 @@ export async function searchThreads(
 export async function configureTelegramBot(
   botToken: string,
   allowedUserIds: Array<number | '*'>,
+  notificationsEnabled?: boolean,
+  quietHours?: { quietEnabled: boolean; quietStart: string; quietEnd: string; timezone: string },
 ): Promise<void> {
   const response = await fetch('/codex-api/telegram/configure-bot', {
     method: 'POST',
@@ -3212,6 +3249,8 @@ export async function configureTelegramBot(
     body: JSON.stringify({
       botToken,
       allowedUserIds,
+      notificationsEnabled,
+      ...quietHours,
     }),
   })
   const payload = await response.json()
@@ -3249,6 +3288,11 @@ export async function getTelegramConfig(): Promise<TelegramConfig> {
   }
   return {
     botToken: typeof data.botToken === 'string' ? data.botToken : '',
+    notificationsEnabled: typeof data.notificationsEnabled === 'boolean' ? data.notificationsEnabled : !!data.botToken,
+    quietEnabled: data.quietEnabled === true,
+    quietStart: typeof data.quietStart === 'string' ? data.quietStart : '22:00',
+    quietEnd: typeof data.quietEnd === 'string' ? data.quietEnd : '08:00',
+    timezone: typeof data.timezone === 'string' ? data.timezone : 'Asia/Shanghai',
     allowedUserIds,
   }
 }

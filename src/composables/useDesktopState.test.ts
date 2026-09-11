@@ -1548,3 +1548,96 @@ it('restores the preferred model after account catalog changes without rewriting
   expect(state.webPreferenceState.value.defaults).toEqual(desired)
   state.stopPolling()
 })
+
+describe('completion read acknowledgement while viewing a conversation', () => {
+  async function setup(visible: boolean, routeVisible = true) {
+    installTestWindow()
+    vi.stubGlobal('document', { visibilityState: visible ? 'visible' : 'hidden' })
+    let notify!: (notification: { method: string; params: unknown }) => void
+    gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+    gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+    gatewayMocks.getThreadGroupsPage.mockResolvedValue({ groups: [{ projectName: 'p', threads: [thread('live', '/p'), thread('other', '/p')] }], nextCursor: null })
+    const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: {} }) })
+    vi.stubGlobal('fetch', request)
+    const state = useDesktopState({ isThreadVisible: () => routeVisible })
+    state.primeSelectedThread('live')
+    state.startPolling()
+    await state.refreshAll({ includeSelectedThreadMessages: false })
+    return { state, request, complete: (token: string, threadId = 'live') => notify({ method: 'codexapp/completions/changed', params: { threadId, token } }) }
+  }
+
+  it('acknowledges the visible completed turn once and leaves no blue dot after switching away', async () => {
+    const { state, request, complete } = await setup(true)
+    complete('turn-one')
+    complete('turn-one')
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ threadId: 'live', token: 'turn-one' })
+    await Promise.resolve()
+    state.primeSelectedThread('other')
+    expect(state.projectGroups.value[0].threads.find(row => row.id === 'live')?.unread).toBe(false)
+    state.stopPolling()
+  })
+
+  it.each([[false, true], [true, false]])('preserves unread when page visible=%s and conversation route visible=%s', async (visible, routeVisible) => {
+    const { state, request, complete } = await setup(visible, routeVisible)
+    complete('unseen')
+    expect(request).not.toHaveBeenCalled()
+    state.primeSelectedThread('other')
+    expect(state.projectGroups.value[0].threads.find(row => row.id === 'live')?.unread).toBe(true)
+    state.stopPolling()
+  })
+
+  it('preserves a background completion while acknowledging the viewed conversation', async () => {
+    const { state, request, complete } = await setup(true)
+    complete('background', 'other')
+    expect(request).not.toHaveBeenCalled()
+    expect(state.projectGroups.value[0].threads.find(row => row.id === 'other')?.unread).toBe(true)
+    state.stopPolling()
+  })
+
+  it('keeps a newer unseen completion when an older visible acknowledgement returns late', async () => {
+    const { state, request, complete } = await setup(true)
+    let finish!: (value: unknown) => void
+    request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    complete('old-visible')
+    state.primeSelectedThread('other')
+    complete('new-unseen')
+    finish({ ok: true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(state.projectGroups.value[0].threads.find(row => row.id === 'live')?.unread).toBe(true)
+    state.stopPolling()
+  })
+})
+
+describe('image delivery optimistic reconciliation', () => {
+  it.each(['matching', 'absent', 'different', 'different-ordinal'])('reconciles image echoes with identity=%s', async (identity) => {
+    installTestWindow()
+    let notify!: (event: { method: string; params: unknown }) => void
+    gatewayMocks.subscribeCodexNotifications.mockImplementation(handler => { notify = handler; return vi.fn() })
+    gatewayMocks.getPendingServerRequests.mockResolvedValue([])
+    const empty = { messages: [], inProgress: false, activeTurnId: '', turnIndexByTurnId: {}, hasMoreOlder: false }
+    gatewayMocks.resumeThread.mockResolvedValue(empty)
+    gatewayMocks.getThreadDetail.mockResolvedValue(empty)
+    gatewayMocks.startThreadTurn.mockResolvedValue('image-turn')
+    const state = useDesktopState()
+    state.primeSelectedThread('image-thread')
+    state.startPolling()
+    await state.loadMessages('image-thread')
+    await state.sendMessageToSelectedThread('看图片', ['http://127.0.0.1:4173/codex-local-image?path=%2Ftmp%2Fimage.png'])
+    const deliveryId = gatewayMocks.startThreadTurn.mock.calls.at(-1)?.[10].id
+    expect(state.messages.value.filter(row => row.role === 'user')).toHaveLength(1)
+    gatewayMocks.getThreadDetail.mockResolvedValue({ ...empty, inProgress: true, activeTurnId: 'image-turn', messages: [{
+      id: 'native-image', role: 'user', text: '看图片', turnId: 'image-turn', userMessageOrdinal: identity === 'different-ordinal' ? 1 : 0,
+      images: ['/codex-local-image?path=%2Ftmp%2Fimage.png'], fileAttachments: [{ label: 'image.png', path: '/tmp/image.png', fsPath: '/tmp/image.png' }],
+      clientUserMessageId: identity === 'matching' ? deliveryId : identity === 'different' ? 'another-delivery' : undefined, messageType: 'userMessage',
+    }] })
+    notify({ method: 'turn/completed', params: { threadId: 'image-thread', turn: { id: 'image-turn', status: 'completed' } } })
+    await state.loadMessages('image-thread')
+    const users = state.messages.value.filter(row => row.role === 'user')
+    expect(users).toHaveLength(identity === 'different' || identity === 'different-ordinal' ? 2 : 1)
+    expect(users.some(row => row.id === 'native-image')).toBe(true)
+    expect(gatewayMocks.startThreadTurn).toHaveBeenCalledTimes(1)
+    state.stopPolling()
+  })
+})

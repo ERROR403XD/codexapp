@@ -1,6 +1,8 @@
 export type ActivationSettings = { enabled: boolean; accountIds: string[]; times: string[]; timezone: string }
 export type ActivationRun = { key: string; accountId: string; scheduledAt: number; finishedAt?: number; status: 'preparing' | 'sending' | 'sent' | 'skipped' | 'unknown'; reason: string }
 export type ActivationSnapshot = { settings: ActivationSettings; runs: ActivationRun[]; nextAt: number | null; error: string; model: string }
+export type ActivationHistorySlot = { date: string; scheduledAt: number; timezone: string }
+export type ActivationHistoryPage = { slots: ActivationHistorySlot[]; page: number; runs: ActivationRun[] }
 export function validateActivationSettings(value: unknown): ActivationSettings {
   const row = value as ActivationSettings
   if (!row || typeof row.enabled !== 'boolean' || !Array.isArray(row.accountIds) || !Array.isArray(row.times)) throw new Error('无效的激活设置')
@@ -9,7 +11,6 @@ export function validateActivationSettings(value: unknown): ActivationSettings {
   try { new Intl.DateTimeFormat('en', { timeZone: row.timezone }).format() } catch { throw new Error('请选择有效时区') }
   if (typeof row.timezone !== 'string' || !row.timezone) throw new Error('请选择有效时区')
   const settings = { enabled: row.enabled, accountIds: [...new Set(row.accountIds)], times: [...new Set(row.times)].sort(), timezone: row.timezone }
-  if (settings.enabled && (!settings.accountIds.length || !settings.times.length)) throw new Error('请至少选择一个账号和一个激活时刻')
   return settings
 }
 export function activationClock(timezone: string) {
@@ -20,7 +21,7 @@ export function activationClock(timezone: string) {
   }
 }
 export function nextActivationAt(settings: ActivationSettings, after: number): number | null {
-  if (!settings.enabled) return null
+  if (!settings.enabled || !settings.accountIds.length || !settings.times.length) return null
   const clock = activationClock(settings.timezone)
   const times = new Set(settings.times)
   // Bounded to cover DST's missing hour. Called on schedule advancement, never per account.

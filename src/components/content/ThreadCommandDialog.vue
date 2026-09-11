@@ -1,23 +1,20 @@
 <template>
-  <AppDialog :open="true" :busy="working" :title="`/${request.name} · ${title}`" @close="close">
+  <AppDialog :open="true" :busy="working" :title="`/${request.name} · ${t(title)}`" @close="close">
     <div class="thread-command-dialog" :aria-busy="working || loading">
       <p v-if="error" class="thread-command-error" role="alert">{{ t(error) }}</p>
       <p v-if="feedback" class="thread-command-feedback" role="status">{{ t(feedback) }}</p>
       <p v-if="loading">{{ t('读取中…') }}</p>
       <template v-if="request.name === 'goal'">
-        <p>{{ t('目标保存在会话中，由 Codex 持续推进；保存并开始后可随时暂停。') }}</p>
         <p v-if="goal" class="thread-goal-status">{{ t(goalLabels[goal.status]) }} {{ t('· Codex 计量') }} {{ goal.tokensUsed.toLocaleString() }} tokens · {{ Math.round(goal.timeUsedSeconds / 60) }} {{ t('分钟') }}</p>
         <p v-if="goal && goalStatusHint(goal)" class="thread-command-hint" role="status">{{ t(goalStatusHint(goal)) }}</p>
         <p v-if="goalConflict" class="thread-command-error" role="alert">{{ t('目标已在其他位置修改。请重新读取后再编辑。') }}<AppButton :disabled="working" @click="reloadGoalForm">{{ t('重新读取') }}</AppButton></p>
         <label>{{ t('目标') }}<textarea v-model="objective" data-autofocus rows="5" maxlength="8000" :disabled="working || loading" :placeholder="t('说明希望完成什么，以及如何验收')" /></label>
         <div class="goal-model-fields">
           <div><span class="goal-model-label">{{ t('模型') }}</span><AppSelect v-model="selectedModel" class="goal-model-picker" :options="modelOptions" enable-search :search-placeholder="t('搜索模型')" :disabled="working || loading || !supported" /></div>
-          <div><span class="goal-model-label">{{ t('推理强度') }}</span><AppSelect v-model="selectedEffort" class="goal-effort-picker" :options="goalEffortOptions.map(option => ({ ...option, label: t(option.label) }))" :disabled="working || loading || !supported" /></div>
+          <div><span class="goal-model-label">{{ t('推理强度') }}</span><AppSelect v-model="selectedEffort" class="goal-effort-picker" :options="goalEffortOptions.map(option => ({ ...option, label: selectedCapability?.providerId === 'custom' ? option.label : t(option.label) }))" :disabled="working || loading || !supported || reasoningUnavailable(selectedCapability)" /></div>
         </div>
         <p v-if="settingsProblem" class="thread-command-error">{{ t(settingsProblem) }}</p>
-        <p class="thread-command-hint">{{ t('保存或继续目标时应用于会话后续回合；当前已开始的回合保持原配置。') }}</p>
-        <label>{{ t('Token 预算（默认 M，可填 M/B）') }}<input v-model="budget" maxlength="50" spellcheck="false" :disabled="working || loading" :placeholder="t('如 1、1.5M 或 0.01B；留空不设预算')" /></label>
-        <p class="thread-command-hint">{{ t('M = 100 万 tokens；B = 10 亿 tokens。不写单位时按 M 计算。') }}</p>
+        <label>{{ t('Token 预算') }}<input v-model="budget" maxlength="50" spellcheck="false" :disabled="working || loading" :placeholder="t('100、2k、30M、0.4B；留空不设预算')" /></label>
         <p v-if="goal && objective.trim() !== goal.objective" class="thread-command-hint">{{ t('修改目标内容会重置该目标的用量统计。') }}</p>
         <div class="thread-command-actions">
           <AppButton type="button" :disabled="working || loading || !supported || goalConflict || !!settingsProblem || !objective.trim()" @click="saveGoal">{{ t(goal ? '保存目标' : '保存并开始') }}</AppButton>
@@ -26,11 +23,6 @@
         </div>
         <p v-if="goal && goal.status !== 'active' && goalFormDirty" class="thread-command-hint">{{ t('请先保存目标或预算的修改，再继续。') }}</p>
         <p v-if="goal && goal.status !== 'active' && goalResumeProblem(goal) && goal.status !== 'budgetLimited'" class="thread-command-hint">{{ t(goalResumeProblem(goal)) }}</p>
-        <details class="thread-command-hint goal-behavior-help">
-          <summary>{{ t('预算与暂停说明') }}</summary>
-          <p>{{ t('预算按 Codex 目标计数控制后续推进，当前回合可能超出预算；该计数不等于会话历史总 tokens。') }}</p>
-          <p>{{ t('暂停或清除停止目标的后续推进；需立即停止当前回合时，使用会话停止按钮。') }}</p>
-        </details>
       </template>
       <template v-else-if="request.name === 'help'">
         <p>{{ t('输入 / 后继续搜索；↑↓ 选择，Enter 确认，Esc 收起。未选择命令时按原方式输入和发送文字。') }}</p>
@@ -58,11 +50,11 @@
 <script setup lang="ts">
 import { t } from '../../composables/useUiLanguage'
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppDialog from '../common/AppDialog.vue'
 import AppButton from '../common/AppButton.vue'
 import AppSelect from '../common/AppSelect.vue'
-import { effortOptions, modelSettingsProblem, type ModelCapability } from '../../modelCapabilities'
+import { reasoningUnavailable, effortOptions, modelSettingsProblem, type ModelCapability } from '../../modelCapabilities'
 import { getGoalModelSettings, applyGoalModelSettings } from '../../api/threadCommands'
 import { goalResumeProblem, goalSavePatch, goalStatusHint, readThreadGoal } from '../../threadGoal'
 import { compactionLabels } from '../../compaction'
@@ -109,11 +101,12 @@ const selectedModel = ref(props.model)
 const selectedEffort = ref(props.effort)
 const modelOptions = computed(() => [...new Set([...props.models.map(model => model.id), selectedModel.value].filter(Boolean))].map(value => ({ value, label: value })))
 const selectedCapability = computed(() => props.models.find(model => model.id === selectedModel.value))
+watch(selectedCapability, model => { if (reasoningUnavailable(model)) selectedEffort.value = '' })
 const goalEffortOptions = computed(() => effortOptions(selectedCapability.value, selectedEffort.value))
 const settingsProblem = computed(() => modelSettingsProblem(selectedCapability.value, selectedEffort.value, ''))
 async function saveModelSettings(): Promise<void> {
   if (settingsProblem.value) throw new Error(settingsProblem.value)
-  const effort = selectedEffort.value || selectedCapability.value?.defaultEffort || ''
+  const effort = reasoningUnavailable(selectedCapability.value) ? '' : selectedEffort.value || selectedCapability.value?.defaultEffort || ''
   await applyGoalModelSettings(threadId, { model: selectedModel.value, effort })
 }
 const goalLabels = goalStatusLabels

@@ -1,3 +1,6 @@
+import { getCustomConnectionStore } from '../customConnectionStore.js'
+import { forwardCustomConnection } from '../customConnectionProxy.js'
+import { customConnectionModels, customConnectionEndpoints } from '../../customConnections.js'
 import { AccountResourcePool } from '../accountResourcePool.js'
 import { AccountExecutionError, resolveAccountSelection } from '../accountExecution.js'
 import { AccountNotificationService } from '../accountNotificationService.js'
@@ -55,7 +58,7 @@ async function body(req: IncomingMessage, limit = MAX_BODY): Promise<Record<stri
 export class ApiProxyGateway {
   private readonly accountComponents = new AccountResourcePool<ProxyComponent>({
     capacity: 8,
-    idle: (_component, id) => !this.accountHasConnections(id),
+    idle: (component, id) => !component.hasReferences() && !this.accountHasConnections(id) && !this.coordinator.executions.busyAccounts().includes(id),
     dispose: component => component.stop(),
   })
   private readonly generationComponents = new WeakMap<ComponentGeneration, ProxyComponent>()
@@ -66,11 +69,17 @@ export class ApiProxyGateway {
   }
   private owner(generation: ComponentGeneration): ProxyComponent { return this.generationComponents.get(generation) || this.component }
   private async resolveAccount(keyId?: string): Promise<string> {
+    const connections = getCustomConnectionStore(this.coordinator.store.codexHome)
+    await connections.ready
+    const explicit = (keyId ? this.store.findKey(keyId)?.accountStorageId : null) || this.store.settings.accountStorageId
+    const custom = explicit ? connections.get(explicit) : connections.active()
+    if (custom) return custom.storageId
     const state = await this.coordinator.store.readState()
     return resolveAccountSelection(state, { accountStorageId: keyId ? this.store.findKey(keyId)?.accountStorageId : null, defaultStorageId: this.store.settings.accountStorageId }).storageId
   }
   private async checkProtection(id: string, keyId?: string): Promise<void> {
     await this.store.ready
+    if (getCustomConnectionStore(this.coordinator.store.codexHome).get(id)) return
     const state = await this.coordinator.store.readState()
     const percent = state.accounts.find(account => account.storageId === id)?.protectionPercent || 0
     if (!percent || (keyId && this.store.findKey(keyId)?.protected && this.store.isKeyUsable(keyId))) return
@@ -88,14 +97,29 @@ export class ApiProxyGateway {
       await this.coordinator.interruptProtectedUsage(account.storageId).catch(() => undefined)
     }
   }
-  private async prepareAccount(id: string, catalog = false): Promise<ComponentGeneration> {
+  private async prepareAccount(id: string, catalog = false, background = false): Promise<ComponentGeneration> {
     const component = await this.accountComponents.getOrCreate(id, () => this.accountComponents.size === 0 && !this.component.status().selectedStorageId
       ? this.component
-      : new ProxyComponent(join(this.store.directory, 'accounts', id), this.coordinator))
+      : new ProxyComponent(join(this.store.directory, 'accounts', id), this.coordinator), !background)
     if (!component) throw new ProxyError('account_capacity', '并行账号数已达8个，请等待连接结束。', 503)
     const generation = await component.prepare(id, { catalog })
     this.generationComponents.set(generation, component)
     return generation
+  }
+  async prepareActivation(id: string, signal: AbortSignal) {
+    signal.throwIfAborted()
+    await this.checkProtection(id)
+    signal.throwIfAborted()
+    const generation = await this.prepareAccount(id, false, true)
+    signal.throwIfAborted()
+    const release = this.owner(generation).hold(generation)
+    return {
+      url: `${generation.url}/v1/responses`,
+      headers: { Authorization: `Bearer ${generation.key}`, 'Content-Type': 'application/json' },
+      revision: generation.revision,
+      storageId: generation.storageId,
+      release,
+    }
   }
   private invalidateKeys(matches: (keyId: string) => boolean): void {
     for (const key of this.store.listKeys()) {
@@ -230,6 +254,33 @@ export class ApiProxyGateway {
       settle = this.usage.begin(keyId, url.pathname === '/v1/models')
       if (!allowedRoutes.has(`${req.method} ${url.pathname}`)) throw new ProxyError('unsupported_endpoint', '此 API 路径未开放。', 404)
       const accountId = await this.resolveAccount(keyId)
+      const custom = getCustomConnectionStore(this.coordinator.store.codexHome).get(accountId)
+      if (custom) {
+        entry = this.activity.admit(keyId, 'http', this.store.settings)
+        entry.storageId = accountId
+        const record = entry
+        record.abort = () => res.destroy()
+        const lease = this.coordinator.executions.register({ storageId: accountId, kind: 'api', ownerId: keyId, disconnect: record.abort })
+        let usage: TokenUsage | null = null
+        let finished = false
+        const finish = () => {
+          if (finished) return
+          finished = true
+          const outcome = res.destroyed && !res.writableFinished ? 'interrupted' : res.statusCode >= 400 ? 'failed' : 'completed'
+          settle?.(outcome, usage)
+          this.activity.finish(record.id, outcome)
+          lease.release()
+        }
+        res.once('finish', finish)
+        res.once('close', finish)
+        const input = req.method === 'POST' ? await body(req) : undefined
+        entry.model = typeof input?.model === 'string' ? input.model : custom.model
+        if (!this.store.isKeyUsable(keyId) || await this.resolveAccount(keyId) !== accountId) throw new ProxyError('key_changed', 'Key账号设置已变化，请重试。', 409)
+        lease.assertCurrent()
+        this.store.touch(keyId)
+        await forwardCustomConnection(req, res, custom, url.pathname, input, value => { usage = value })
+        return
+      }
       if (req.method === 'POST') await this.checkProtection(accountId, keyId)
       entry = this.activity.admit(keyId, 'http', this.store.settings)
       entry.storageId = accountId
@@ -421,6 +472,7 @@ export class ApiProxyGateway {
       const url = new URL(req.url || '/', 'http://localhost')
       if (url.pathname !== '/v1/responses') throw new ProxyError('unsupported_endpoint', '此 WebSocket 路径未开放。', 404)
       const accountId = await this.resolveAccount(keyId)
+      if (getCustomConnectionStore(this.coordinator.store.codexHome).get(accountId)) throw new ProxyError('unsupported_transport', '自定义连接请使用 HTTP 或 SSE。', 400)
       await this.checkProtection(accountId, keyId)
       entry = this.activity.admit(keyId, 'ws', this.store.settings)
       entry.storageId = accountId
@@ -548,14 +600,24 @@ export class ApiProxyGateway {
         json(res, 200, { data: await this.activation.snapshot() })
         return
       }
+      if (req.method === 'GET' && path === '/activation/history') {
+        json(res, 200, { data: await this.activation.historyPage(Number(url.searchParams.get('page') || 1)) })
+        return
+      }
       if (req.method === 'GET' && path === '/status') {
         await this.usage.ready
         const selectedId = await this.resolveAccount().catch(() => null)
         const selectedComponent = selectedId ? this.accountComponents.get(selectedId) : null
-        json(res, 200, { data: { settings: this.store.settings, ...(selectedComponent || this.component).status(), selectedStorageId: selectedId, installed: await this.component.available(),
+        const connections = getCustomConnectionStore(this.coordinator.store.codexHome)
+        await connections.ready
+        const custom = connections.get(selectedId)
+        const accounts = await this.coordinator.listAccounts({ scheduleRefresh: false })
+        accounts.accounts.push(...connections.snapshot().connections.map(row => ({ storageId: row.storageId, alias: row.alias, email: null, accountId: row.baseUrl, authStatus: 'ready', kind: 'custom', supportedEndpoints: customConnectionEndpoints(row) } as any)))
+        if (connections.active()) accounts.activeStorageId = connections.active()!.storageId
+        json(res, 200, { data: { settings: this.store.settings, ...(selectedComponent || this.component).status(), selectedStorageId: selectedId, installed: !!custom || await this.component.available(), ...(custom ? { ready: true, lastError: null } : {}),
           usage: this.usage.summary(url.searchParams.get('timeZone') || 'UTC'),
           activity: this.activity.snapshot(), keys: this.store.listKeys(), manifest: { name: proxyManifest.name, version: proxyManifest.version },
-          accounts: await this.coordinator.listAccounts({ scheduleRefresh: false }) } })
+          accounts } })
         return
       }
       if (req.method === 'GET' && path === '/models') {
@@ -563,6 +625,8 @@ export class ApiProxyGateway {
         const keyId = url.searchParams.get('keyId') || undefined
         if (keyId && !this.store.findKey(keyId)) throw new ProxyError('key_not_found', 'Key不存在。', 404)
         const selectedId = url.searchParams.get('accountStorageId') || await this.resolveAccount(keyId)
+        const custom = getCustomConnectionStore(this.coordinator.store.codexHome).get(selectedId)
+        if (custom) { json(res, 200, { data: customConnectionModels({ ...custom, hasApiKey: true }) }); return }
         const generation = await this.prepareAccount(selectedId, true)
         const response = await fetch(`${generation.url}/v1/models`, { headers: { Authorization: `Bearer ${generation.key}` }, signal: AbortSignal.timeout(5000) })
         json(res, response.status, await response.json())
@@ -600,7 +664,7 @@ export class ApiProxyGateway {
         this.store.validateKeyPolicy(input)
         if (input.accountStorageId) {
           const state = await this.coordinator.store.readState()
-          if (!state.accounts.some(account => account.storageId === input.accountStorageId)) throw new ProxyError('account_not_found', '所选账号不存在。')
+          if (!getCustomConnectionStore(this.coordinator.store.codexHome).get(String(input.accountStorageId)) && !state.accounts.some(account => account.storageId === input.accountStorageId)) throw new ProxyError('account_not_found', '所选账号不存在。')
         }
       }
       if (path === '/keys') {
@@ -635,7 +699,7 @@ export class ApiProxyGateway {
           this.store.validateSettings(settings)
           if (settings.accountStorageId) {
             const state = await this.coordinator.listAccounts({ scheduleRefresh: false })
-            if (!state.accounts.some(account => account.storageId === settings.accountStorageId)) throw new ProxyError('account_not_found', '所选账号不存在。')
+            if (!getCustomConnectionStore(this.coordinator.store.codexHome).get(settings.accountStorageId) && !state.accounts.some(account => account.storageId === settings.accountStorageId)) throw new ProxyError('account_not_found', '所选账号不存在。')
           }
           if (!settings.enabled) {
             await this.activity.drain(previous.drainTimeoutSeconds * 1000, input.force === true)
