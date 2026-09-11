@@ -1,8 +1,8 @@
 <template>
   <div class="directory-hub">
     <header class="directory-header">
-      <div><a class="directory-back" href="#/settings">{{ t('设置 / 扩展管理') }}</a><h2 class="directory-title">{{ t('插件 / 技能 / MCP') }}</h2></div>
-      <AppButton :busy="loading" @click="refresh(true)">{{ t('刷新') }}</AppButton>
+      <h1 class="directory-title">{{ t('应用') }}</h1>
+      <AppButton v-if="activeTab !== 'plugins'" :busy="loading" @click="refresh(true)">{{ t('刷新') }}</AppButton>
     </header>
     <nav class="directory-tabs" :aria-label="t('扩展分类')">
       <button v-for="tab in tabs" :key="tab.id" type="button" class="directory-tab" :class="{ 'is-active': activeTab === tab.id }" :aria-label="t(tab.label)" :aria-pressed="activeTab === tab.id" :disabled="busy" @click="selectTab(tab.id)">
@@ -18,13 +18,14 @@
     <section v-if="activeTab === 'plugins'" class="directory-section">
       <div class="directory-toolbar">
         <input v-model="search" class="directory-search" type="search" :placeholder="t('搜索插件')" :aria-label="t('搜索插件')" />
+        <AppButton :busy="loading" @click="refresh(true)">{{ t('刷新') }}</AppButton>
         <AppSelect v-model="pluginFilter" :options="pluginFilterOptions.map(option => ({ ...option, label: t(option.label) }))" />
       </div>
       <p v-if="ready && supportsPlugins && !loading" class="directory-results-count">{{ filteredPlugins.length }} {{ t('个插件') }}<span v-if="installedCount"> {{ t('· 已安装') }} {{ installedCount }} {{ t('个') }}</span></p>
       <p v-if="!supportsPlugins && ready" class="directory-empty">{{ t('当前 Codex CLI 未提供原版插件接口。可继续管理技能和 MCP。') }}</p>
-      <p v-else-if="loading" class="directory-loading">{{ t('读取插件…') }}</p>
+      <p v-else-if="loading && !plugins.length" class="directory-loading">{{ t('读取插件…') }}</p>
       <p v-else-if="!visiblePlugins.length" class="directory-empty">{{ t(search || pluginFilter !== 'all' ? '没有匹配的插件，试试其他关键词或筛选条件。' : '暂无插件。配置原版插件市场后刷新即可查看。') }}</p>
-      <div v-if="!loading" class="directory-grid">
+      <div v-if="plugins.length" class="directory-grid">
         <button v-for="plugin in visiblePlugins" :key="plugin.id" type="button" class="directory-card" @click="openPluginDetail(plugin)">
           <div class="directory-card-top">
             <img v-if="pluginIconSrc(plugin)" class="directory-card-icon" :src="pluginIconSrc(plugin)" alt="" loading="lazy" />
@@ -37,7 +38,8 @@
       </div>
       <div v-if="filteredPlugins.length > 60" class="directory-pagination">
         <AppButton :disabled="pluginPage <= 1" @click="pluginPage -= 1">{{ t('上一页') }}</AppButton>
-        <span>{{ pluginPage }} / {{ pluginPageCount }} · {{ filteredPlugins.length }} {{ t('个插件') }}</span>
+        <AppSelect :model-value="String(pluginPage)" :options="pluginPageOptions" :aria-label="t('选择页面')" enable-search @update:model-value="pluginPage = Number($event)" />
+        <span>{{ filteredPlugins.length }} {{ t('个插件') }}</span>
         <AppButton :disabled="pluginPage >= pluginPageCount" @click="pluginPage += 1">{{ t('下一页') }}</AppButton>
       </div>
     </section>
@@ -49,12 +51,9 @@
         @skills-changed="onDirectorySkillsChanged"
         @try-item="(payload) => emit('try-item', payload)"
       >
-        <template #before-installed>
+        <template #before-search>
           <div class="skills-embedded-section">
-            <button class="skills-embedded-toggle" type="button" :aria-expanded="isMcpSectionOpen" @click="isMcpSectionOpen = !isMcpSectionOpen">
-              <span class="skills-embedded-title">{{ t('MCP 连接') }} <span class="directory-count">{{ visibleMcpServers.length }}</span></span>
-              <span class="skills-embedded-chevron" :class="{ 'is-open': isMcpSectionOpen }">›</span>
-            </button>
+            <DirectorySectionToggle :title="t('MCP 连接')" :count="visibleMcpServers.length" :open="isMcpSectionOpen" @toggle="isMcpSectionOpen = !isMcpSectionOpen" />
             <div v-if="isMcpSectionOpen" class="skills-embedded-body">
               <div class="directory-mcp-toolbar"><p class="directory-scope-note">{{ t('查看已配置服务、连接状态与可用工具。') }}</p><AppButton v-if="supportsMcpReload" :busy="isReloadingMcps" @click="reloadMcps">{{ t('重载配置') }}</AppButton></div>
               <div v-if="!supportsMcps" class="directory-empty">
@@ -120,7 +119,7 @@
       <template #footer>
         <template v-if="selectedPlugin?.installed">
           <AppButton variant="danger" :busy="busy" @click="changePlugin('uninstall')">{{ t('卸载') }}</AppButton>
-          <AppButton :busy="busy" @click="changePlugin('toggle')">{{ t(selectedPlugin.enabled ? '停用' : '启用') }}</AppButton>
+          <AppSwitch :disabled="busy" :model-value="selectedPlugin.enabled" @change="changePlugin('toggle')">{{ t('启用') }}</AppSwitch>
           <AppButton v-if="selectedPlugin.enabled" :disabled="busy || !!props.tryInFlightKey || !detail" @click="tryPlugin">{{ t('试用') }}</AppButton>
         </template>
         <AppButton v-else :busy="busy" :disabled="!detail || unavailable" @click="changePlugin('install')">{{ t('安装') }}</AppButton>
@@ -133,9 +132,11 @@ import { useTransientNotice } from '../../composables/useTransientNotice'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppButton from '../common/AppButton.vue'
+import AppSwitch from '../common/AppSwitch.vue'
 import AppDialog from '../common/AppDialog.vue'
 import AppSelect from '../common/AppSelect.vue'
 import SkillsHub from './SkillsHub.vue'
+import DirectorySectionToggle from './DirectorySectionToggle.vue'
 import { useUiLanguage } from '../../composables/useUiLanguage'
 import { formatDirectoryError, pluginManagementUrl, mcpRuntimeLabel } from '../../directory'
 import { subscribeTaskNotifications } from '../../subtasks'
@@ -178,6 +179,7 @@ const filteredPlugins = computed(() => {
   })
 })
 const pluginPageCount = computed(() => Math.max(1, Math.ceil(filteredPlugins.value.length / 60)))
+const pluginPageOptions = computed(() => Array.from({ length: pluginPageCount.value }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / ${pluginPageCount.value}` })))
 const visiblePlugins = computed(() => filteredPlugins.value.slice((pluginPage.value - 1) * 60, pluginPage.value * 60))
 watch([search, pluginFilter, plugins], () => { pluginPage.value = 1 })
 const connectionApps = computed(() => [...new Map([...(detail.value?.apps || []), ...authApps.value].map(app => [app.id, app])).values()])
@@ -351,7 +353,7 @@ function tryPlugin(): void {
 function onDirectorySkillsChanged(): void { emit('skills-changed') }
 const signatures = new Map<string, string>()
 const unsubscribe = subscribeTaskNotifications(notification => {
-  if (!['skills/changed', 'mcpServer/startupStatus/updated', 'mcpServer/oauthLogin/completed'].includes(notification.method)) return
+  if (activeTab.value === 'plugins' || !['skills/changed', 'mcpServer/startupStatus/updated', 'mcpServer/oauthLogin/completed'].includes(notification.method)) return
   const signature = JSON.stringify(notification.params)
   if (signatures.get(notification.method) === signature) return
   signatures.set(notification.method, signature)
@@ -367,7 +369,7 @@ watch(() => [props.cwd, props.threadId, activeTab.value], () => {
   plugins.value = []
   mcpServers.value = []
   expandedMcpNames.value = new Set()
-  void refresh(true)
+  void refresh()
 })
 onMounted(() => { void refresh() })
 onBeforeUnmount(() => {
@@ -386,7 +388,7 @@ onBeforeUnmount(() => {
 .directory-title { margin: 10px 0 6px; font-size: 24px; line-height: 1.3; font-weight: 650; }
 .directory-subtitle { margin: 0; color: var(--ui-muted); font-size: 13px; line-height: 1.6; }
 .directory-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 6px; border: 1px solid var(--ui-divider); border-radius: var(--ui-radius-dialog); background: var(--ui-hover); }
-.directory-tab { display: flex; flex-direction: column; gap: 4px; padding: 13px 16px; border: 1px solid transparent; border-radius: var(--ui-radius-popover); background: transparent; color: var(--ui-muted); text-align: left; cursor: pointer; transition: background .15s; }
+.directory-tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 13px 16px; border: 1px solid transparent; border-radius: var(--ui-radius-popover); background: transparent; color: var(--ui-muted); text-align: center; cursor: pointer; transition: background .15s; }
 .directory-tab strong { font-size: 14px; font-weight: 600; }
 .directory-tab span { font-size: 12px; }
 .directory-tab.is-active { border-color: var(--ui-divider); background: var(--ui-surface); color: var(--ui-text); box-shadow: 0 1px 3px #00000008; }
@@ -397,9 +399,9 @@ onBeforeUnmount(() => {
 .directory-scope-picker :deep(.app-select) { width: 240px; max-width: 100%; min-width: 0; }
 .directory-scope > p { flex: 1 1 260px; line-height: 1.6; }
 .directory-section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.directory-toolbar { display: flex; align-items: center; gap: 10px; }
+.directory-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .directory-toolbar > .app-select { flex: 0 0 145px; }
-.directory-search { min-width: 0; width: 100%; height: 40px; padding: 9px 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-control); background: var(--ui-field); color: var(--ui-text); font-size: 13px; }
+.directory-search { min-width: 0; flex: 1 1 180px; width: auto; height: 40px; padding: 9px 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-control); background: var(--ui-field); color: var(--ui-text); font-size: 13px; }
 .directory-search:focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 1px; }
 .directory-results-count { margin: 0; color: var(--ui-muted); font-size: 12px; }
 .directory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 14px; }
@@ -416,7 +418,7 @@ onBeforeUnmount(() => {
 .directory-chip, .directory-count { padding: 3px 7px; border-radius: 6px; background: var(--ui-hover); color: var(--ui-muted); font-size: 10px; }
 .directory-plugin-status { flex-shrink: 0; color: var(--ui-muted); font-size: 11px; }
 .directory-plugin-status.is-installed { color: var(--ui-focus); }
-.directory-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 12px 0; color: var(--ui-muted); font-size: 12px; }
+.directory-pagination { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; padding: 12px 0; color: var(--ui-muted); font-size: 12px; }
 .directory-empty, .directory-loading { padding: 36px 20px; margin: 0; border: 1px dashed var(--ui-border); border-radius: var(--ui-radius-dialog); color: var(--ui-muted); text-align: center; font-size: 13px; }
 .directory-toast { padding: 12px; margin: 0; border: 1px solid var(--ui-divider); border-radius: var(--ui-radius-control); color: var(--ui-text); background: var(--ui-hover); font-size: 13px; }
 .directory-error { padding: 12px; border: 1px solid var(--ui-danger-border); border-radius: var(--ui-radius-control); color: var(--ui-danger); font-size: 13px; overflow-wrap: anywhere; }

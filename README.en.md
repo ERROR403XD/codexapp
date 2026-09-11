@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/ERROR403XD/codexapp)](https://github.com/ERROR403XD/codexapp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-CodexApp is a self-hosted web interface for Codex app-server. Manage projects, conversations, accounts, and automations from desktop, tablet, or phone browsers. The release baseline is **0.2.16**. This is an independently maintained community project, unaffiliated with OpenAI.
+CodexApp is a self-hosted web interface for Codex app-server. Manage projects, conversations, accounts, and automations from desktop, tablet, or phone browsers. The release baseline is **0.2.17**. This is an independently maintained community project, unaffiliated with OpenAI.
 
 ## Acceptable use and policy compliance
 
@@ -51,11 +51,11 @@ This fork therefore continues development from the GitHub source, rather than th
 | Goals and commands | Goal cards, budgets and progress, and searchable slash commands, where supported by the runtime. |
 | Queue and recovery | Queued sends while busy, explicit steering, persistent queues, continuation deduplication, and clearer failures. Continuation and retries must not bypass limits or safety refusals. |
 | Additional working directories | Shared create/edit project dialog writes directory guidance into project `AGENTS.md`, preserving other content. This is not a multi-root file tree and does not add container mounts. |
-| Completion list | Server-persisted blue dots for newly completed turns, synchronized across clients and cleared on opening; not inferred from historical update times. |
+| Completion list | Server-persisted blue dots for turns completed while not being viewed, synchronized across clients and cleared on opening; not inferred from historical update times. |
 | Bilingual interface | Chinese/English settings, accounts, API proxy, automations, and project dialogs with persistent language preferences; user content is not translated. |
 | Deployment | Removed built-in tunneling and mandatory startup login; strict ports, two-phase release switching, and cache recovery. |
 
-Version 0.2.16 focuses on completion tracking, project directories, bilingual coverage, terminology, quota labels, and the automatic-theme icon. Other features accumulated across this fork's earlier versions.
+Version 0.2.17 adds custom connections and optional scheduled account activation, improves plugin loading, notification settings, and WebUI appearance settings. Automation switches preserve row order until refresh. Viewed conversations no longer receive a completion dot; image-message echoes are deduplicated; unanswered questions stay above the composer; system theme uses a monitor icon. Scheduled activation is disabled by default, prioritizes foreground work, skips busy accounts, and bounds requests.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Version 0.2.16 focuses on completion tracking, project directories, bilingual co
 ### Build this repository
 
 ```bash
-git clone --branch v0.2.16 https://github.com/ERROR403XD/codexapp.git
+git clone --branch v0.2.17 https://github.com/ERROR403XD/codexapp.git
 cd codexapp
 pnpm install --frozen-lockfile
 pnpm run build
@@ -81,11 +81,11 @@ Open `http://localhost:5900`, follow the terminal's web authentication instructi
 
 ### Install the GitHub Release package
 
-Download `codexapp-0.2.16.tgz` and `SHA256SUMS` from [v0.2.16](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.16), then run in the download directory:
+Download `codexapp-0.2.17.tgz` and `SHA256SUMS` from [v0.2.17](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.17), then run in the download directory:
 
 ```bash
 sha256sum -c SHA256SUMS
-npm install -g ./codexapp-0.2.16.tgz
+npm install -g ./codexapp-0.2.17.tgz
 codexapp --port 5900 --strict-port --no-open
 ```
 
@@ -135,9 +135,9 @@ pnpm run build
 pnpm run test:unit
 ```
 
-Vue 3 / TypeScript / Vite power the frontend. Node.js / Express connect to Codex app-server over WebSocket/RPC; the terminal uses xterm.js / node-pty. Source is in `src/` and `scripts/`; see [tests.md](tests.md) and [public release verification](docs/RELEASE-0.2.16.md).
+Vue 3 / TypeScript / Vite power the frontend. Node.js / Express connect to Codex app-server over WebSocket/RPC; the terminal uses xterm.js / node-pty. Source is in `src/` and `scripts/`; see [tests.md](tests.md) and [public release verification](docs/RELEASE-0.2.17.md).
 
-See [0.2.16 release verification](docs/RELEASE-0.2.16.md) for the tested scope and limitations. Private conversations, host paths, screenshots, and raw acceptance records are excluded.
+See [0.2.17 release verification](docs/RELEASE-0.2.17.md) for the tested scope and limitations. Private conversations, host paths, screenshots, and raw acceptance records are excluded.
 
 ## Troubleshooting
 

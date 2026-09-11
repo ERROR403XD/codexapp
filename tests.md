@@ -13,3 +13,7 @@ Prerequisites: Node.js 24, pnpm 11, dependencies installed; use an isolated CODE
 7. Complete a synthetic conversation, verify completion status in two clients, open it and refresh: the blue dot must clear across clients and remain cleared.
 
 Cleanup: stop only the test instance; remove synthetic projects and temporary CODEX_HOME after inspection. Never use actual quota reset credits for tests. Public release checks and explicit limitations are recorded in [docs/RELEASE-0.2.16.md](docs/RELEASE-0.2.16.md).
+
+## 0.2.17
+
+See [UI regression checks](tests/ui/release-0.2.17.md) and [release verification](docs/RELEASE-0.2.17.md).
