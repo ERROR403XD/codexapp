@@ -55,9 +55,7 @@ This fork therefore continues development from the GitHub source, rather than th
 | Bilingual interface | Chinese/English settings, accounts, API proxy, automations, and project dialogs with persistent language preferences; user content is not translated. |
 | Deployment | Removed built-in tunneling and mandatory startup login; strict ports, two-phase release switching, and cache recovery. |
 
-The wider plugin refresh button aligns with the list right edge; the filter fits its content and the search field fills the remaining space with consistent control gaps.
-
-Version 0.2.19 is the sealed maintenance baseline for the 0.2 series and includes the previously unpublished 0.2.18 changes: unified time controls and multiple daily times, name-only project organization, recoverable steering-message display, active-list retention and persistent red/yellow issue dots, lightweight feedback, and composer fixes. Focused repairs improve automation preparation, state persistence and long-term history recovery while preserving existing account, quota, API routing and admission rules. Browsers supporting launch_handler can reuse an existing PWA window. See the [release notes](docs/RELEASE-0.2.19.md).
+Version 0.2.19 includes changes from 0.2.18 and 0.2.19: name-only projects, multiple daily scheduled times, steering-message recovery and deduplication, improved conversation filtering and error states, fixes to automation persistence and history recovery, and UI improvements. See the [release notes](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.19).
 
 ## Requirements
 
