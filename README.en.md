@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/ERROR403XD/codexapp)](https://github.com/ERROR403XD/codexapp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-CodexApp is a self-hosted web interface for Codex app-server. Manage projects, conversations, accounts, and automations from desktop, tablet, or phone browsers. The release baseline is **0.2.17**. This is an independently maintained community project, unaffiliated with OpenAI.
+CodexApp is a self-hosted web interface for Codex app-server. Manage projects, conversations, accounts, and automations from desktop, tablet, or phone browsers. The release baseline is **0.2.19**. This is an independently maintained community project, unaffiliated with OpenAI.
 
 ## Acceptable use and policy compliance
 
@@ -57,7 +57,7 @@ This fork therefore continues development from the GitHub source, rather than th
 
 The wider plugin refresh button aligns with the list right edge; the filter fits its content and the search field fills the remaining space with consistent control gaps.
 
-Version 0.2.17 adds custom connections and optional scheduled account activation, improves plugin loading, notification settings, and WebUI appearance settings. Automation switches preserve row order until refresh. Viewed conversations no longer receive a completion dot; image-message echoes are deduplicated; unanswered questions stay above the composer; system theme uses a monitor icon. Scheduled activation is disabled by default, prioritizes foreground work, skips busy accounts, and bounds requests.
+Version 0.2.19 is the sealed maintenance baseline for the 0.2 series and includes the previously unpublished 0.2.18 changes: unified time controls and multiple daily times, name-only project organization, recoverable steering-message display, active-list retention and persistent red/yellow issue dots, lightweight feedback, and composer fixes. Focused repairs improve automation preparation, state persistence and long-term history recovery while preserving existing account, quota, API routing and admission rules. Browsers supporting launch_handler can reuse an existing PWA window. See the [release notes](docs/RELEASE-0.2.19.md).
 
 ## Requirements
 
@@ -72,7 +72,7 @@ Version 0.2.17 adds custom connections and optional scheduled account activation
 ### Build this repository
 
 ```bash
-git clone --branch v0.2.17 https://github.com/ERROR403XD/codexapp.git
+git clone --branch v0.2.19 https://github.com/ERROR403XD/codexapp.git
 cd codexapp
 pnpm install --frozen-lockfile
 pnpm run build
@@ -83,11 +83,11 @@ Open `http://localhost:5900`, follow the terminal's web authentication instructi
 
 ### Install the GitHub Release package
 
-Download `codexapp-0.2.17.tgz` and `SHA256SUMS` from [v0.2.17](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.17), then run in the download directory:
+Download `codexapp-0.2.19.tgz` and `SHA256SUMS` from [v0.2.19](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.19), then run in the download directory:
 
 ```bash
 sha256sum -c SHA256SUMS
-npm install -g ./codexapp-0.2.17.tgz
+npm install -g ./codexapp-0.2.19.tgz
 codexapp --port 5900 --strict-port --no-open
 ```
 
@@ -128,6 +128,8 @@ Credentials, conversations, and application state live in the selected `CODEX_HO
 
 Finish running tasks and back up data before upgrading. Verify and build/install the new release before starting it. Keep the previous tag/package and data backups for rollback. `scripts/codexapp-release-switch.sh` implements two-phase deployment for this project's host setup; read its configuration before using it. Publishing a GitHub Release does not automatically switch your running service.
 
+Version 0.2.19 uses recoverable segmented automation history. Before downgrading, stop the instance and keep a complete backup, then run `node dist-cli/index.js automation-history --home /path/to/codex-home --export-legacy` with the **0.2.19 executable**. Start the older version only after export succeeds; never delete locks or history to bypass a failure. Direct runtime dependencies are pinned; retain each deployment’s generated package-lock.json so npm ci can reproduce the same resolved installation.
+
 ## Development and verification
 
 ```bash
@@ -137,9 +139,9 @@ pnpm run build
 pnpm run test:unit
 ```
 
-Vue 3 / TypeScript / Vite power the frontend. Node.js / Express connect to Codex app-server over WebSocket/RPC; the terminal uses xterm.js / node-pty. Source is in `src/` and `scripts/`; see [tests.md](tests.md) and [public release verification](docs/RELEASE-0.2.17.md).
+Vue 3 / TypeScript / Vite power the frontend. Node.js / Express connect to Codex app-server over WebSocket/RPC; the terminal uses xterm.js / node-pty. Source is in `src/` and `scripts/`; see [tests.md](tests.md) and [public release verification](docs/RELEASE-0.2.19.md).
 
-See [0.2.17 release verification](docs/RELEASE-0.2.17.md) for the tested scope and limitations. Private conversations, host paths, screenshots, and raw acceptance records are excluded.
+See [0.2.19 release verification](docs/RELEASE-0.2.19.md) for the tested scope and limitations. Private conversations, host paths, screenshots, and raw acceptance records are excluded.
 
 ## Troubleshooting
 

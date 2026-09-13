@@ -5,11 +5,11 @@ import { useComposerCommandPicker } from '../../composables/useComposerCommandPi
 
 const event = (key: string, extra = {}) => ({ key, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, isComposing: false, keyCode: 0, preventDefault() {}, ...extra }) as KeyboardEvent
 describe('slash command input contract', () => {
-  it.each(['https://a/b', '/tmp/path', '2026/09/06', 'a/b', '` /plan', '```ts\n /plan', '/plan/extra'])('leaves code and literal paths alone: %s', (text) => {
+  it.each(['https://a/b', '/tmp/path', '2026/09/06', './a/b', '../a/b', '` /plan', '```ts\n /plan', '/plan/extra'])('leaves code and literal paths alone: %s', (text) => {
     expect(findSlashToken(text, text.length)).toBeNull()
   })
   it('detects a token at the cursor without consuming neighboring text', () => {
-    expect(findSlashToken('你好 /plan 后文', 8)).toEqual({ start: 3, end: 8, query: 'plan', text: '/plan' })
+    expect(findSlashToken('/plan 后文', 5)).toBeNull()
     expect(findSlashToken('/plan', 3, 4)).toBeNull()
     expect(findSlashToken('/plan', 3)?.end).toBe(5)
   })
@@ -39,14 +39,29 @@ describe('slash command input contract', () => {
     picker.update('/plan', 5); expect(picker.selectedIndex.value).toBe(-1)
     picker.keydown(event('ArrowDown')); picker.keydown(event('Enter')); expect(applied).toEqual(['/plan'])
     picker.update('/planmore', 9); expect(picker.visible.value).toBe(false)
-    picker.update('text ', 5); picker.update('text /', 6); expect(picker.visible.value).toBe(true)
-    picker.keydown(event('Escape')); picker.update('text /model', 11); expect(picker.visible.value).toBe(false)
+    picker.update('', 0); picker.update('/', 1); expect(picker.visible.value).toBe(true)
+    picker.keydown(event('Escape')); picker.update('/model', 6); expect(picker.visible.value).toBe(false)
   })
-  it('does not open on paste but allows a new subsequent token', () => {
+  it('does not open on paste or a subsequent token, but allows a fresh draft', () => {
     const picker = useComposerCommandPicker(ref(buildComposerCommands([], [])), () => {})
     picker.update('/plan', 5, 5, true); expect(picker.visible.value).toBe(false)
-    picker.update('/plan ', 6); picker.update('/plan /', 7); expect(picker.visible.value).toBe(true)
+    picker.update('/plan ', 6); picker.update('/plan /', 7); expect(picker.visible.value).toBe(false)
+    picker.update('', 0); picker.update('/', 1); expect(picker.visible.value).toBe(true)
   })
+})
+
+it('only starts a command-input session from a slash typed into an empty draft', () => {
+  const picker = useComposerCommandPicker(ref(buildComposerCommands([], [])), () => {})
+  picker.update('/existing', 1, 1, false, false)
+  expect(picker.visible.value).toBe(false)
+  picker.update('', 0, 0, false, false)
+  picker.update('/', 1, 1, false, true)
+  picker.update('/plan', 5, 5, false, false)
+  expect(picker.visible.value).toBe(true)
+  picker.update('/plan body', 5, 5, false, false)
+  expect(picker.visible.value).toBe(false)
+  picker.update('/plan', 5, 5, false, false)
+  expect(picker.visible.value).toBe(false)
 })
 
 
@@ -56,4 +71,14 @@ it('searches translated built-in descriptions while preserving external descript
   expect(filterComposerCommands(commands, 'discuss').map(row => row.name)).toEqual(['/plan'])
   expect(filterComposerCommands(commands, '计划').map(row => row.name)).toEqual(['/plan'])
   expect(commands.find(row => row.name === '/external')?.description).toBe('保存')
+})
+
+
+it.each(['已有内容', 'hello', '第一行\n第二行', '先讨论，', ' ', '\n', '/plan '])('keeps slash literal after preceding content: %s', prefix => {
+  const picker = useComposerCommandPicker(ref(buildComposerCommands([], [])), () => {})
+  picker.update(prefix + '/', prefix.length + 1)
+  expect(picker.visible.value).toBe(false)
+  picker.update(prefix + '/plan', prefix.length + 5)
+  expect(picker.visible.value).toBe(false)
+  expect(picker.token.value).toBeNull()
 })

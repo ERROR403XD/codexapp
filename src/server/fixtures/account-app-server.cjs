@@ -8,7 +8,7 @@ let account = 'none'
 try { account = JSON.parse(readFileSync(process.env.CODEX_HOME + '/auth.json', 'utf8')).tokens.account_id } catch {}
 const configuredProviderArg = process.argv.find(arg => arg.startsWith('model_provider='))
 const configuredProvider = configuredProviderArg ? JSON.parse(configuredProviderArg.slice('model_provider='.length)) : 'openai'
-if (configuredProvider.startsWith('custom_')) account = 'custom'
+if (/^custom_[a-f0-9]{64}$/.test(configuredProvider)) account = 'custom'
 const threads = new Map()
 const loaded = new Set()
 const refreshReplies = new Map()
@@ -16,7 +16,21 @@ let nextRefreshId = 900000
 const save = thread => writeFileSync(process.env.CODEX_HOME + '/fixture-thread-' + thread.id + '.json', JSON.stringify(thread))
 const send = value => process.stdout.write(JSON.stringify(value) + '\n')
 const notify = (method, params) => send({ method, params })
-createInterface({ input: process.stdin }).on('line', line => {
+async function pause(method, phase, params) {
+  const path = process.env.CODEXAPP_FIXTURE_PAUSE_FILE
+  if (!path) return
+  const matches = () => {
+    try {
+      const setting = JSON.parse(readFileSync(path, 'utf8'))
+      return setting.method === method && (setting.phase || 'before') === phase
+        && (!setting.account || setting.account === (params.chatgptAccountId || account))
+    } catch { return false }
+  }
+  if (!matches()) return
+  writeFileSync(path + '.' + process.pid + '.waiting', JSON.stringify({ pid: process.pid, method, phase }))
+  while (matches()) await new Promise(resolve => setTimeout(resolve, 10))
+}
+createInterface({ input: process.stdin }).on('line', async line => {
   const message = JSON.parse(line)
   const { id, method, params: p = {} } = message
   if (!method && refreshReplies.has(id)) {
@@ -26,16 +40,17 @@ createInterface({ input: process.stdin }).on('line', line => {
     return
   }
   if (!method || id === undefined) return
+  await pause(method, 'before', p)
   let result = {}
   if (method === 'account/login/start') {
-    if (configuredProvider.startsWith('custom_')) { send({ id, error: { message: 'custom_runtime_must_not_login' } }); return }
+    if (/^custom_[a-f0-9]{64}$/.test(configuredProvider)) { send({ id, error: { message: 'custom_runtime_must_not_login' } }); return }
     account = p.chatgptAccountId
   }
   if (method === 'account/read') result = { account: { id: account, email: account + '@example.test' }, pid: process.pid }
   if (method === 'config/read') result = { config: { model_provider: configuredProvider, model: 'fixture' } }
   if (method === 'account/rateLimits/read') result = { rateLimits: { primary: { usedPercent: 10, windowDurationMins: 300 } } }
   if (method === 'thread/start') {
-    const thread = { id: randomUUID(), cwd: p.cwd, status: { type: 'idle' }, turns: [] }
+    const thread = { id: randomUUID(), cwd: p.cwd, modelProvider: configuredProvider, status: { type: 'idle' }, turns: [] }
     threads.set(thread.id, thread)
     loaded.add(thread.id)
     save(thread)
@@ -45,10 +60,14 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (method === 'thread/loaded/list') result = { data: [...loaded], nextCursor: null }
   if (method === 'thread/backgroundTerminals/list') result = { data: [], nextCursor: null }
   if (method === 'thread/unsubscribe') result = { status: loaded.has(p.threadId) ? 'unsubscribed' : 'notLoaded' }
-  if (method === 'thread/resume') {
+  if (method === 'thread/resume' || method === 'thread/fork') {
     const thread = JSON.parse(readFileSync(process.env.CODEX_HOME + '/fixture-thread-' + p.threadId + '.json', 'utf8'))
     // Native Codex does not persist a resumable rollout until the first turn.
     if (!thread.turns.length) { send({ id, error: { message: 'no rollout found for thread id ' + p.threadId } }); return }
+    const provider = p.modelProvider || thread.modelProvider || configuredProvider
+    if (provider !== configuredProvider) { send({ id, error: { message: 'failed to load configuration: Model provider `' + provider + '` not found' } }); return }
+    thread.modelProvider = provider
+    if (method === 'thread/fork') { thread.id = randomUUID(); save(thread) }
     threads.set(thread.id, thread)
     loaded.add(thread.id)
     result = { thread }
@@ -88,5 +107,6 @@ createInterface({ input: process.stdin }).on('line', line => {
     const turn = thread?.turns.find(turn => turn.id === p.turnId)
     if (turn) { turn.status = 'interrupted'; thread.status.type = 'idle'; notify('turn/completed', { threadId: thread.id, turn }) }
   }
+  await pause(method, 'after', p)
   send({ id, result })
 })

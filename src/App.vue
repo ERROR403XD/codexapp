@@ -1,4 +1,6 @@
 <template>
+  <FeedbackReportDialog />
+  <OperationToastHost />
   <DesktopLayout :is-sidebar-collapsed="isSidebarCollapsed" @close-sidebar="setSidebarCollapsed(true)">
     <template #sidebar>
       <section class="sidebar-root">
@@ -101,7 +103,18 @@
             </span>
           </button>
 
-          <SidebarThreadTree ref="sidebarThreadTreeRef" :groups="sidebarThreadGroups" :accounts="executionAccounts" :models="availableModelIds" :model-capabilities="availableModels" :goals="threadGoals" :quota-resume-marks="quotaResumeMarks" :quota-resume-error="quotaResumeError" @toggle-quota-resume="toggleQuotaResume" :project-display-name-by-id="projectDisplayNameById"
+          <div v-if="!isSidebarCollapsed" class="sidebar-thread-filter" role="group" :aria-label="t('筛选会话')">
+            <button v-for="option in sidebarFilterOptions" :key="option.value" type="button"
+              class="sidebar-filter-tag" :class="{ 'is-active': sidebarFilter === option.value }"
+              :aria-pressed="sidebarFilter === option.value"
+              @click="sidebarFilter = sidebarFilter === option.value ? 'all' : option.value">
+              {{ option.label }}
+            </button>
+          </div>
+          <p v-if="!isSidebarCollapsed && sidebarFilter === 'interrupted' && sidebarFilterError" class="sidebar-filter-error" role="alert">
+            {{ t(sidebarFilterError) }} <button type="button" @click="refreshSidebarFilter">{{ t('重试') }}</button>
+          </p>
+          <SidebarThreadTree :status-filter="sidebarFilter" :retained-thread-id="retainedThreadId" :active-retained-ids="sidebarActiveSession.retainedIds" :interruptions="sidebarProblems" :ignoring-problems="sidebarIgnoringProblems" :interruption-error="sidebarProblemError" @ignore-thread-problems="ignoreThreadProblems" :quota-interrupted="sidebarInterrupted" :filter-loading="sidebarFilterLoading" ref="sidebarThreadTreeRef" :groups="sidebarThreadGroups" :accounts="executionAccounts" :models="availableModelIds" :model-capabilities="availableModels" :goals="threadGoals" :quota-resume-marks="quotaResumeMarks" :quota-resume-error="quotaResumeError" @toggle-quota-resume="toggleQuotaResume" :project-display-name-by-id="projectDisplayNameById"
             :project-git-repo-by-name="projectGitRepoByName"
             :project-cwd-by-name="projectCwdByName"
             v-if="!isSidebarCollapsed"
@@ -116,6 +129,7 @@
             @save-thread-project="onSaveThreadProject"
             @browse-project-files="onBrowseProjectFiles"
             @save-project="onSaveProject"
+            @move-conversation-project="onMoveConversationProject"
             @request-project-git-status="onRequestProjectGitStatus"
             @create-project-worktree="onCreateProjectWorktree"
             @rename-thread="onRenameThread"
@@ -144,7 +158,7 @@
           <AppPopover :open="isSettingsOpen" :anchor="settingsAreaRef" :width="400" direction="up" avoid-anchor-overlap panel-class="account-popover" @close="isSettingsOpen = false">
             <div class="account-popover-content">
               <div class="account-popover-scroll">
-                <AccountPanel :accounts="displayAccounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
+                <AccountPanel :accounts="displayAccounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
                   @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount" />
                 <CustomConnections @changed="onCustomConnectionsChanged" />
               </div>
@@ -256,11 +270,11 @@
           </template>
           <template v-else-if="isApiProxyRoute"><ApiProxyPanel /></template>
           <template v-else-if="isSettingsRoute"><SettingsPanel>
-<template #accounts><AccountPanel :accounts="displayAccounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :notice="accountActionNotice" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
+<template #accounts><AccountPanel :accounts="displayAccounts" :busy="isSwitchingAccounts || isStartingCodexLogin" :error="accountActionError" :confirming-remove-id="confirmingRemoveAccountId" :disabled="isAccountActionDisabled" :status="formatAccountStatus"
   @reload="loadAccountsState()" @refresh="onRefreshAccounts" @add="onStartCodexLogin('add')" @switch="onSwitchAccount" @quota="onRefreshAccountQuota" @reauth="onStartCodexLogin('reauth', $event)" @remove="onRemoveAccount" />
 <CustomConnections @changed="onCustomConnectionsChanged" />
 <AccountActivation :key="displayTimeZonePreference" :accounts="accounts" /></template>
-<template #general><div class="settings-form-grid"><ConversationDefaults :value="webDefaultChoice" :remember="webPreferenceState.remember" :models="availableModels" :provider="webDefaultsProvider" :error="webPreferenceError" @save="configureWebDefaults" />              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the interface language for the app.')">
+<template #general><div class="settings-form-grid"><ConversationDefaults :value="webDefaultChoice" :remember="webPreferenceState.remember" :models="availableModels" :provider="webDefaultsProvider" :has-account="!!activeAccount" :error="webPreferenceError" @save="configureWebDefaults" />              <div class="sidebar-settings-row sidebar-settings-row--select" :title="t('Choose the interface language for the app.')">
                 <span class="sidebar-settings-label">{{ t('UI language') }}</span>
                 <AppSelect
                   class="sidebar-settings-provider-dropdown"
@@ -342,20 +356,19 @@
         <p v-if="telegramConfigError" class="account-panel-error" role="alert">{{ t(telegramConfigError) }}</p>
         <AppButton :busy="isTelegramSaving" @click="saveTelegramConfig()">{{ t('保存Telegram设置') }}</AppButton>
         <AppButton :disabled="isTelegramSaving || !telegramNotificationsEnabledDraft" @click="testTelegramNotification">{{ t('发送测试通知') }}</AppButton>
-        <span v-if="telegramNotice" role="status">{{ t(telegramNotice) }}</span>
       </div>
       <div class="notification-quiet">
         <AppSwitch v-model="telegramQuietDraft.quietEnabled" :disabled="isTelegramSaving" @change="saveTelegramQuietHours">{{ t('免打扰') }}</AppSwitch>
         <div class="notification-hours">
-          <input v-model="telegramQuietDraft.quietStart" class="app-input" :aria-label="t('免打扰开始')" placeholder="22:00" maxlength="5" :disabled="isTelegramSaving || !telegramQuietDraft.quietEnabled" @change="saveTelegramQuietHours" />
+          <AppTimeInput v-model="telegramQuietDraft.quietStart" class="app-input" :aria-label="t('免打扰开始')" placeholder="22:00" :disabled="isTelegramSaving || !telegramQuietDraft.quietEnabled" @change="saveTelegramQuietHours" />
           <span>{{ t('至') }}</span>
-          <input v-model="telegramQuietDraft.quietEnd" class="app-input" :aria-label="t('免打扰结束')" placeholder="08:00" maxlength="5" :disabled="isTelegramSaving || !telegramQuietDraft.quietEnabled" @change="saveTelegramQuietHours" />
+          <AppTimeInput v-model="telegramQuietDraft.quietEnd" class="app-input" :aria-label="t('免打扰结束')" placeholder="08:00" :disabled="isTelegramSaving || !telegramQuietDraft.quietEnabled" @change="saveTelegramQuietHours" />
         </div>
       </div>
     </section>
   </div>
 </template>
-<template #about><div class="settings-about-versions"><div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div><p>{{ t('工作树') }} {{ worktreeName }}</p>
+<template #about><div class="settings-about-versions"><div class="account-versions"><span>Codex {{ t(runtimeCapabilities?.cliVersion || '检测中…') }}</span><span>CodexApp {{ runtimeCapabilities?.appVersion || appVersion }}</span></div>
 <p v-if="runtimeCapabilities && runtimeCapabilities.appVersion !== appVersion" role="alert">{{ t('前端版本') }} {{ appVersion }} {{ t('与服务端版本不同，请刷新页面。') }}</p></div>
 <details class="runtime-capabilities"><summary>{{ t('运行版本与能力') }}</summary>
 <template v-if="runtimeCapabilities"><p>{{ t('模型：动态目录 · 工具：轻量摘要') }}</p><p>{{ t('异步问题：已接入') }}</p><p>{{ t('原生历史分页：') }}{{ t(runtimeCapabilities.features?.historyPaging ? '可用' : 'CLI 未声明，使用兼容路径') }}</p><p>{{ t('协议') }} {{ t(runtimeCapabilities.experimental ? 'experimental' : '默认') }} · {{ runtimeCapabilities.schemaHash.slice(0,12) }}</p><p>{{ t('CLI 声明') }} {{ runtimeCapabilities.methods.length }} {{ t('个方法，声明数量不代表客户端支持率。') }}</p><p>{{ t('检测时间') }} {{ runtimeCapabilities.generatedAt }}</p></template>
@@ -647,10 +660,8 @@
                     <span>{{ t(codexCliMissingError) }}</span>
                     <a class="visible-error-feedback" :href="feedbackMailto" @click="prepareFeedbackLink($event, codexCliMissingError)">{{ t('Send feedback') }}</a>
                   </div>
-                  <p v-if="selectedThreadQueueError" class="composer-runtime-error" role="alert">{{ t(selectedThreadQueueError) }}</p>
-                  <p v-if="threadHistoryActionError" class="composer-runtime-error" role="alert">{{ t(threadHistoryActionError) }}</p>
+                  <p v-if="queueStateError" class="composer-runtime-error" role="alert">{{ t(queueStateError) }}</p>
                   <DeliveryOutbox :thread-id="selectedThreadId" :queue="selectedThreadQueuedMessages" @settled="onDeliveryAcknowledged" />
-                  <p v-if="queueDraftError" class="composer-runtime-error" role="alert">{{ t(queueDraftError) }}</p>
                   <div v-if="editingQueuedMessageState" class="queue-edit-notice" role="status">
                     <span>{{ t('正在编辑队列消息') }}</span>
                     <AppButton @click="resumeQueuedMessage(editingQueuedMessageState.messageId)">{{ t('取消编辑') }}</AppButton>
@@ -835,7 +846,7 @@
                           @keydown.enter.prevent="onSubmitProjectSetup"
                         />
                       </label>
-                      <label v-if="projectSetupMode === 'create'" class="new-thread-project-field">
+                      <label v-if="projectSetupMode === 'create' && projectSetupBaseDir.trim()" class="new-thread-project-field">
                         <span class="new-thread-open-folder-label">{{ t('附加工作目录') }}</span>
                         <textarea v-model="projectDirectoryDraft" class="new-thread-open-folder-path project-directories-input" rows="4" :disabled="isProjectSetupSubmitting || !projectDirectoriesLoaded" :placeholder="'/workspace/project1\n/workspace/project2'" />
                       </label>
@@ -863,7 +874,6 @@ import { useCustomConnections } from './composables/useCustomConnections'
 import { invalidateModelCatalog } from './api/modelCatalog'
 import AppSwitch from './components/common/AppSwitch.vue'
 import type { UiProjectGroup } from './types/codex'
-import { useTransientNotice } from './composables/useTransientNotice'
 import { accountDisplayName } from './accountDisplay'
 import AppDialog from './components/common/AppDialog.vue'
 import NotificationSettings from './components/settings/NotificationSettings.vue'
@@ -888,8 +898,11 @@ import { isAsyncUserInputRequest, pendingRequestPriority } from './userQuestions
 import { isOverlayEventInside } from './composables/overlayEvents'
 import { availableDisplayTimeZones, browserTimeZone, displayTimeZone, displayTimeZonePreference, formatLocalDateTime, setDisplayTimeZone, subscribeDisplayTimeZoneStorage } from './dateTime'
 import AppSelect from './components/common/AppSelect.vue'
+import AppTimeInput from './components/common/AppTimeInput.vue'
 import { vModalBackdrop } from './composables/modalBackdrop'
 import { getProjectDirectories } from './api/codexGateway'
+import { isVirtualProjectId, type VirtualProject } from './projectOrganization'
+import { assignConversationProject, invalidateWorkspaceRootsStateCache } from './api/codexGateway'
 import { projectDisplayName, projectSetupInput } from './composables/projectSetup'
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -897,6 +910,9 @@ import DesktopLayout from './components/layout/DesktopLayout.vue'
 import SidebarThreadTree from './components/sidebar/SidebarThreadTree.vue'
 import ContentHeader from './components/content/ContentHeader.vue'
 import AsyncQuestionDock from './components/content/AsyncQuestionDock.vue'
+import OperationToastHost from './components/common/OperationToastHost.vue'
+import { notifyOperation, clearOperationToasts } from './composables/useOperationToast'
+import FeedbackReportDialog from './components/content/FeedbackReportDialog.vue'
 import ThreadComposer from './components/content/ThreadComposer.vue'
 import ThreadGoalCard from './components/content/ThreadGoalCard.vue'
 import ThreadTasksPanel from './components/content/ThreadTasksPanel.vue'
@@ -905,6 +921,7 @@ import TaskSearchDialog from './components/content/TaskSearchDialog.vue'
 import { taskId } from './subtasks'
 import { compactionRequests } from './api/threadCompaction'
 import { useAccountQuotaUpdates } from './composables/useAccountQuotaUpdates'
+import { useSidebarThreadFilter } from './composables/useSidebarThreadFilter'
 import { useQuotaResume } from './composables/useQuotaResume'
 import { useThreadGoals } from './composables/useThreadGoals'
 import ThreadPendingRequestPanel from './components/content/ThreadPendingRequestPanel.vue'
@@ -923,6 +940,7 @@ import IconTablerTerminal from './components/icons/IconTablerTerminal.vue'
 import IconTablerX from './components/icons/IconTablerX.vue'
 import { useDesktopState } from './composables/useDesktopState'
 import { useMobile } from './composables/useMobile'
+import { nextLayoutViewportHeight } from './virtualKeyboardViewport'
 import { useUiLanguage } from './composables/useUiLanguage'
 import { useFeedbackDiagnostics } from './composables/useFeedbackDiagnostics'
 import {
@@ -980,10 +998,10 @@ const { t, uiLanguage, uiLanguageOptions, setUiLanguage } = useUiLanguage()
 const { state: customConnections, active: activeCustomConnection, load: loadCustomConnections } = useCustomConnections()
 const displayAccounts = computed(() => activeCustomConnection.value ? accounts.value.map(account => ({ ...account, isActive: false })) : accounts.value)
 const executionAccounts = computed(() => [...accounts.value, ...customConnections.value.connections.filter(row => row.wireApi === 'responses').map(row => ({ storageId: row.storageId, alias: row.alias, email: null, accountId: row.baseUrl }))])
-async function onCustomConnectionsChanged(): Promise<void> {
+async function onCustomConnectionsChanged(changed = false): Promise<void> {
   invalidateModelCatalog()
   await loadCustomConnections()
-  await refreshAll({ includeSelectedThreadMessages: false })
+  await refreshAll({ accountChanged: changed, includeSelectedThreadMessages: changed, awaitAncillaryRefreshes: changed })
 }
 const displayTimeZoneError = ref('')
 const isSavingDisplayTimeZone = ref(false)
@@ -1013,7 +1031,7 @@ async function onDisplayTimeZoneChange(value: string): Promise<void> {
     if (!telegramResponse.ok) throw new Error('显示时区保存失败。')
     setDisplayTimeZone(value)
   } catch (cause) {
-    displayTimeZoneError.value = cause instanceof Error ? cause.message : '显示时区保存失败。'
+    notifyOperation(cause instanceof Error ? cause.message : '显示时区保存失败。')
   } finally {
     isSavingDisplayTimeZone.value = false
   }
@@ -1023,7 +1041,6 @@ const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const ACCOUNTS_SECTION_COLLAPSED_STORAGE_KEY = 'codex-web-local.accounts-section-collapsed.v1'
 const TERMINAL_QUICK_COMMAND_STORAGE_KEY = 'codex-web-local.terminal-quick-commands.v1'
 const TOGGLE_TERMINAL_COMMAND_VALUE = '__toggle_terminal__'
-const worktreeName = import.meta.env.VITE_WORKTREE_NAME ?? 'unknown'
 const appVersion = import.meta.env.VITE_APP_VERSION ?? 'unknown'
 const SETTINGS_HELP = {
   sendWithEnter: t('When enabled, press Enter to send. When disabled, use Command+Enter to send.'),
@@ -1235,7 +1252,7 @@ const {
   sendMessageToNewThread,
   interruptSelectedThreadTurn,
   selectedThreadQueuedMessages,
-  selectedThreadQueueError,
+  queueStateError,
   removeQueuedMessage,
   beginQueuedMessageEdit,
   updateQueuedMessage,
@@ -1283,20 +1300,17 @@ type AutomationEditRequest = {
 const sidebarThreadTreeRef = ref<SidebarThreadTreeExposed | null>(null)
 const automationsPanelRef = ref<AutomationsPanelExposed | null>(null)
 const {
-  buildFeedbackMailto,
-  feedbackMailtoBase,
+  openFeedbackReport,
+  feedbackUrl,
   recordVisibleFailure,
 } = useFeedbackDiagnostics()
-const feedbackMailto = feedbackMailtoBase()
+const feedbackMailto = feedbackUrl
 
 function prepareFeedbackLink(event: MouseEvent, message?: string): void {
   if (message) {
     recordVisibleFailure(message)
   }
-  const target = event.currentTarget
-  if (target instanceof HTMLAnchorElement) {
-    target.href = buildFeedbackMailto()
-  }
+  openFeedbackReport(event)
 }
 const homeThreadComposerRef = ref<ThreadComposerExposed | null>(null)
 const threadComposerRef = ref<ThreadComposerExposed | null>(null)
@@ -1316,6 +1330,7 @@ const queueDraftEdits = ref<Record<string, QueueDraftEdit>>(loadQueueDraftEdits(
 const editingQueuedMessageState = computed(() => queueDraftEdits.value[selectedThreadId.value] ?? null)
 const replaceQueueDraftId = ref('')
 const queueDraftError = ref('')
+watch(queueDraftError, message => { if (message) notifyOperation(message, 'error', selectedThreadId.value || undefined) }, { flush: 'sync' })
 
 function loadQueueDraftEdits(): Record<string, QueueDraftEdit> {
   try {
@@ -1353,7 +1368,8 @@ const gitRepoStatusRequestByCwd = new Map<string, Promise<boolean>>()
 const newWorktreeBaseBranch = ref('')
 const worktreeBranchOptions = ref<WorktreeBranchOption[]>([])
 const isLoadingWorktreeBranches = ref(false)
-const workspaceRootOptionsState = ref<{ order: string[]; labels: Record<string, string>; projectOrder: string[] }>({
+const workspaceRootOptionsState = ref<{ order: string[]; labels: Record<string, string>; projectOrder: string[]; virtualProjects: VirtualProject[] }>({
+  virtualProjects: [],
   order: [],
   labels: {},
   projectOrder: [],
@@ -1399,6 +1415,13 @@ const sidebarThreadGroups = computed(() => {
   return groups
 })
 
+const { filter: sidebarFilter, retainedThreadId, activeSession: sidebarActiveSession, problems: sidebarProblems, problemError: sidebarProblemError, ignoringProblems: sidebarIgnoringProblems, ignoreThreadProblems, interrupted: sidebarInterrupted, loading: sidebarFilterLoading, error: sidebarFilterError, refresh: refreshSidebarFilter, retainBeforeSelect } = useSidebarThreadFilter(sidebarThreadGroups, selectedThreadId)
+const sidebarFilterOptions = computed(() => [
+  { value: 'active', label: t('活跃') },
+  { value: 'unread', label: t('未读') },
+  { value: 'interrupted', label: t('中断') },
+] as const)
+
 function setSidebarSearchMode(value: string): void {
   if (value === 'title' || value === 'body') sidebarSearchMode.value = value
 }
@@ -1411,6 +1434,7 @@ const serverMatchedThreadIds = ref<string[] | null>(null)
 const threadSearchStatus = ref('')
 const threadSearchScope = ref('')
 const threadHistoryActionError = ref('')
+watch(threadHistoryActionError, message => { if (message) notifyOperation(message, 'error', selectedThreadId.value || undefined) }, { flush: 'sync' })
 watch(() => selectedThreadId.value, () => { threadHistoryActionError.value = '' })
 let threadSearchController: AbortController | null = null
 let threadSearchTimer: ReturnType<typeof setTimeout> | null = null
@@ -1492,9 +1516,6 @@ const removingAccountId = ref('')
 const confirmingRemoveAccountId = ref('')
 const hoveredAccountId = ref('')
 const accountActionError = ref('')
-const accountActionNotice = useTransientNotice()
-watch(isSettingsOpen, open => { if (!open) accountActionNotice.value = '' })
-watch(() => route.fullPath, () => { accountActionNotice.value = '' })
 const SEND_WITH_ENTER_KEY = 'codex-web-local.send-with-enter.v1'
 const DARK_MODE_KEY = 'codex-web-local.dark-mode.v1'
 const DICTATION_CLICK_TO_TOGGLE_KEY = 'codex-web-local.dictation-click-to-toggle.v1'
@@ -1543,7 +1564,6 @@ const customEndpointKey = ref('')
 const customEndpointWireApi = ref<'responses' | 'chat'>('responses')
 const openRouterWireApi = ref<'responses' | 'chat'>('responses')
 const opencodeZenKey = ref('')
-const telegramNotice = useTransientNotice()
 const telegramBotTokenDraft = ref('')
 const telegramNotificationsEnabledDraft = ref(false)
 const telegramQuietDraft = ref({ quietEnabled: false, quietStart: '22:00', quietEnd: '08:00' })
@@ -1638,6 +1658,7 @@ const mobileResumeSyncInProgress = ref(false)
 const visualViewportHeight = ref(typeof window !== 'undefined' ? window.visualViewport?.height ?? window.innerHeight : 0)
 const visualViewportOffsetTop = ref(typeof window !== 'undefined' ? window.visualViewport?.offsetTop ?? 0 : 0)
 const layoutViewportHeight = ref(typeof window !== 'undefined' ? window.innerHeight : 0)
+let layoutViewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0
 let accountStatePollTimer: number | null = null
 let isAccountStatePollInFlight = false
 let externalCodexAuthAvailable = false
@@ -1712,7 +1733,7 @@ const visiblePendingRequests = computed(() => {
 })
 const pendingReplyIds = ref(new Set<number>())
 const composerCwd = computed(() => {
-  if (isHomeRoute.value) return newThreadCwd.value.trim()
+  if (isHomeRoute.value) return isVirtualProjectId(newThreadCwd.value) ? '' : newThreadCwd.value.trim()
   return selectedThread.value?.cwd?.trim() ?? ''
 })
 const canShowTerminalToggle = computed(() => (
@@ -1739,7 +1760,7 @@ const isTerminalKeyboardLayoutActive = computed(() => (
 ))
 const directoryCwd = computed(() => isSkillsRoute.value
   ? (typeof route.query.cwd === 'string' ? route.query.cwd.trim() : '')
-  : selectedThread.value?.cwd?.trim() ?? newThreadCwd.value.trim())
+  : selectedThread.value?.cwd?.trim() ?? composerCwd.value)
 const directoryThreadId = computed(() => isSkillsRoute.value && typeof route.query.fromThread === 'string' ? route.query.fromThread : '')
 const directoryProjects = computed(() => [...new Set([
   ...workspaceRootOptionsState.value.order,
@@ -1772,7 +1793,7 @@ function formatCompactTokenCount(value: number): string {
 
 function buildThreadContextTooltip(usage: UiThreadTokenUsage | null): string {
   if (!usage) {
-    return t('Waiting for Codex thread/tokenUsage/updated events for this thread.')
+    return t('等待会话用量更新。')
   }
 
   const lines = [
@@ -1784,7 +1805,7 @@ function buildThreadContextTooltip(usage: UiThreadTokenUsage | null): string {
     lines.unshift(`${t('Model context window')}: ${usage.modelContextWindow.toLocaleString()} ${t('tokens')}`)
     lines.push(`${t('Remaining context')}: ${(usage.remainingContextTokens ?? 0).toLocaleString()} ${t('tokens')}`)
   } else {
-    lines.push(t('Model context window is unavailable in the latest usage event.'))
+    lines.push(t('暂无模型上下文窗口信息。'))
   }
 
   return lines.join('\n')
@@ -1841,9 +1862,9 @@ function getFolderOptionLabel(path: string, fallbackLabel = ''): string {
 }
 
 function getOrderedWorkspaceRootOptions(): string[] {
-  const savedRoots = new Set(workspaceRootOptionsState.value.order)
+  const savedRoots = new Set([...workspaceRootOptionsState.value.order, ...workspaceRootOptionsState.value.virtualProjects.map(project => project.id)])
   const orderedRoots = workspaceRootOptionsState.value.projectOrder.filter((item) => savedRoots.has(item))
-  for (const rootPath of workspaceRootOptionsState.value.order) {
+  for (const rootPath of savedRoots) {
     if (!orderedRoots.includes(rootPath)) orderedRoots.push(rootPath)
   }
   return orderedRoots
@@ -1951,8 +1972,8 @@ const isProjectNameDraftValid = computed(() => Boolean(projectNameDraft.value.tr
 const canSubmitProjectSetup = computed(() => {
   if (projectSetupMode.value === 'create' && !projectDirectoriesLoaded.value) return false
   const baseDir = projectSetupDestination.value.trim()
-  if (!baseDir) return false
   if (projectSetupMode.value === 'create') return isProjectNameDraftValid.value
+  if (!baseDir) return false
   return githubCloneUrlDraft.value.trim().length > 0
 })
 const resolvedExistingFolderPath = computed(() => {
@@ -2046,10 +2067,10 @@ const terminalHeaderDropdownOptions = computed(() => [
 ])
 const contentStyle = computed(() => {
   const preset = CHAT_WIDTH_PRESETS[chatWidth.value]
-  const keyboardInset = Math.max(
+  const keyboardInset = isVirtualKeyboardOpen.value ? Math.max(
     0,
     layoutViewportHeight.value - visualViewportHeight.value - visualViewportOffsetTop.value,
-  )
+  ) : 0
   return {
     '--chat-column-max': preset.columnMax,
     '--chat-card-max': preset.cardMax,
@@ -2136,7 +2157,16 @@ onUnmounted(() => {
 
 function updateVisualViewportState(): void {
   if (typeof window === 'undefined') return
-  layoutViewportHeight.value = Math.max(layoutViewportHeight.value, window.innerHeight)
+  layoutViewportHeight.value = nextLayoutViewportHeight(
+    { width: layoutViewportWidth, height: layoutViewportHeight.value },
+    {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      coarsePointer: window.matchMedia('(pointer: coarse)').matches,
+      editing: document.activeElement?.matches('textarea, input, [contenteditable="true"]') === true,
+    },
+  )
+  layoutViewportWidth = window.innerWidth
   visualViewportHeight.value = window.visualViewport?.height ?? window.innerHeight
   visualViewportOffsetTop.value = window.visualViewport?.offsetTop ?? 0
 }
@@ -2300,7 +2330,7 @@ async function saveTelegramConfig(showNotice = true): Promise<boolean> {
 
   isTelegramSaving.value = true
   telegramConfigError.value = ''
-  telegramNotice.value = ''
+
   try {
     await configureTelegramBot(botToken, allowedUserIds, telegramNotificationsEnabledDraft.value, { ...telegramQuietDraft.value, timezone: displayTimeZone() })
     telegramAllowedUserIdsDraft.value = allowedUserIds.map((value) => String(value)).join('\n')
@@ -2308,10 +2338,10 @@ async function saveTelegramConfig(showNotice = true): Promise<boolean> {
       refreshTelegramConfig(),
       refreshTelegramStatus(),
     ])
-    if (showNotice) telegramNotice.value = '已保存'
+    if (showNotice) notifyOperation('已保存', 'success')
     return true
   } catch (error) {
-    telegramConfigError.value = error instanceof Error ? error.message : t('Failed to connect Telegram bot')
+    notifyOperation(error instanceof Error ? error.message : t('Failed to connect Telegram bot'))
     void refreshTelegramStatus()
     return false
   } finally {
@@ -2331,7 +2361,7 @@ async function saveTelegramQuietHours(): Promise<void> {
     const payload = await response.json()
     if (!response.ok) throw new Error(payload.error || '保存失败')
   } catch (error) {
-    telegramConfigError.value = error instanceof Error ? error.message : '保存失败'
+    notifyOperation(error instanceof Error ? error.message : '保存失败')
   } finally {
     isTelegramSaving.value = false
   }
@@ -2341,14 +2371,14 @@ async function testTelegramNotification(): Promise<void> {
   if (!telegramNotificationsEnabledDraft.value || !await saveTelegramConfig(false)) return
   isTelegramSaving.value = true
   telegramConfigError.value = ''
-  telegramNotice.value = ''
+
   try {
     const response = await fetch('/codex-api/telegram/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language: uiLanguage.value }) })
     const payload = await response.json()
     if (!response.ok) throw new Error(payload.error || '测试通知发送失败。')
-    telegramNotice.value = '通知已发送'
+    notifyOperation('通知已发送', 'success')
   } catch (error) {
-    telegramConfigError.value = error instanceof Error ? error.message : '测试通知发送失败。'
+    notifyOperation(error instanceof Error ? error.message : '测试通知发送失败。')
   } finally {
     isTelegramSaving.value = false
   }
@@ -2428,6 +2458,7 @@ function onSidebarSearchKeydown(event: KeyboardEvent): void {
 
 function onSelectThread(threadId: string): void {
   if (!threadId) return
+  retainBeforeSelect(threadId)
   markThreadAsRead(threadId)
   if (route.name === 'thread' && routeThreadId.value === threadId) return
   void router.push({ name: 'thread', params: { threadId } })
@@ -2639,7 +2670,7 @@ async function loadAccountsState(options: { silent?: boolean } = {}): Promise<vo
 async function onRefreshAccounts(): Promise<void> {
   if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value) return
   accountActionError.value = ''
-  accountActionNotice.value = ''
+
   hoveredAccountId.value = ''
   confirmingRemoveAccountId.value = ''
   isRefreshingAccounts.value = true
@@ -2652,7 +2683,7 @@ async function onRefreshAccounts(): Promise<void> {
     }
 
   } catch (error) {
-    accountActionError.value = error instanceof Error ? error.message : t('Failed to refresh accounts')
+    notifyOperation(error instanceof Error ? error.message : t('Failed to refresh accounts'))
   } finally {
     isRefreshingAccounts.value = false
   }
@@ -2661,13 +2692,13 @@ async function onRefreshAccounts(): Promise<void> {
 async function onRefreshAccountQuota(storageId: string): Promise<void> {
   if (isRefreshingAccounts.value || isSwitchingAccounts.value || isStartingCodexLogin.value || refreshingAccountId.value) return
   accountActionError.value = ''
-  accountActionNotice.value = ''
+
   refreshingAccountId.value = storageId
   try {
     const result = await refreshAccountQuota(storageId)
     applyAccountsSnapshot(result.accounts)
   } catch (error) {
-    accountActionError.value = error instanceof Error ? error.message : t('Failed to refresh account quota')
+    notifyOperation(error instanceof Error ? error.message : t('Failed to refresh account quota'))
   } finally {
     refreshingAccountId.value = ''
   }
@@ -2676,7 +2707,7 @@ async function onRefreshAccountQuota(storageId: string): Promise<void> {
 async function onSwitchAccount(storageId: string): Promise<void> {
   if (isSwitchingAccounts.value || isStartingCodexLogin.value) return
   accountActionError.value = ''
-  accountActionNotice.value = ''
+
   hoveredAccountId.value = ''
   confirmingRemoveAccountId.value = ''
   isSwitchingAccounts.value = true
@@ -2693,12 +2724,14 @@ async function onSwitchAccount(storageId: string): Promise<void> {
     stopPolling()
     startPolling()
     await refreshAll({
+      accountChanged: true,
       includeSelectedThreadMessages: true,
+      awaitAncillaryRefreshes: true,
     })
     await loadAccountsState({ silent: true })
-    accountActionNotice.value = t('Account switched.')
+    notifyOperation('账号已切换', 'success')
   } catch (error) {
-    accountActionError.value = error instanceof Error ? error.message : t('Failed to switch account')
+    notifyOperation(error instanceof Error ? error.message : t('Failed to switch account'))
   } finally {
     isSwitchingAccounts.value = false
   }
@@ -2707,7 +2740,7 @@ async function onSwitchAccount(storageId: string): Promise<void> {
 function onStartCodexLogin(intent: 'add' | 'reauth', targetStorageId = ''): void {
   if (isSwitchingAccounts.value) return
   accountActionError.value = ''
-  accountActionNotice.value = ''
+
   loginIntent.value = intent
   loginTargetStorageId.value = targetStorageId
   isCodexLoginModalOpen.value = true
@@ -2726,9 +2759,7 @@ function onAccountLoginCompleted(result: AccountLoginCompleteResult): void {
   loginTargetStorageId.value = ''
   stopPolling()
   startPolling()
-  accountActionNotice.value = result.outcome === 'added'
-    ? t('Account added.')
-    : t('Account sign-in refreshed.')
+  notifyOperation(result.outcome === 'added' ? t('Account added.') : t('Account sign-in refreshed.'), 'success')
 }
 
 async function onRemoveAccount(storageId: string): Promise<void> {
@@ -2746,7 +2777,7 @@ async function onRemoveAccount(storageId: string): Promise<void> {
   try {
     const result = await removeAccount(storageId)
     removedAccountIds.add(storageId)
-    accountActionNotice.value = '账号已移除'
+    notifyOperation('账号已移除', 'success')
     applyAccountsSnapshot(result.accounts)
     stopPolling()
     startPolling()
@@ -2757,7 +2788,7 @@ async function onRemoveAccount(storageId: string): Promise<void> {
     }
     void loadAccountsState({ silent: true })
   } catch (error) {
-    accountActionError.value = error instanceof Error ? error.message : t('Failed to remove account')
+    notifyOperation(error instanceof Error ? error.message : t('Failed to remove account'))
   } finally {
     removingAccountId.value = ''
   }
@@ -2769,12 +2800,16 @@ function onArchiveThread(threadId: string): void {
 
 async function onForkThread(threadId: string): Promise<void> {
   const nextThreadId = await forkThreadById(threadId)
-  if (!nextThreadId) return
+  if (!nextThreadId) {
+    notifyOperation(desktopError.value || '无法创建分支。', 'error', threadId)
+    return
+  }
   if (!isHomeRoute.value) {
     await router.push({ name: 'thread', params: { threadId: nextThreadId } })
   } else {
     await router.replace({ name: 'thread', params: { threadId: nextThreadId } })
   }
+  notifyOperation('分支已创建', 'success', nextThreadId)
   if (isMobile.value) setSidebarCollapsed(true)
 }
 
@@ -2785,6 +2820,7 @@ function isWorktreePath(cwdRaw: string): boolean {
 }
 
 function resolvePreferredLocalCwd(projectName: string, fallbackCwd = ''): string {
+  if (isVirtualProjectId(projectName)) return ''
   const group = projectGroups.value.find((row) => row.projectName === projectName)
   if (!group) return resolveWorkspaceRootCwd(projectName) || fallbackCwd.trim()
   const nonWorktreeThread = group.threads.find((thread) => !isWorktreePath(thread.cwd))
@@ -2793,6 +2829,7 @@ function resolvePreferredLocalCwd(projectName: string, fallbackCwd = ''): string
 }
 
 function onStartNewThread(projectName: string): void {
+  if (isVirtualProjectId(projectName)) newThreadCwd.value = projectName
   const projectGroup = projectGroups.value.find((group) => group.projectName === projectName)
   const projectCwd = resolvePreferredLocalCwd(projectName, projectGroup?.threads[0]?.cwd?.trim() ?? '')
   if (projectCwd) {
@@ -2817,6 +2854,7 @@ function onBrowseThreadFiles(threadId: string): void {
 }
 
 function getProjectCwd(projectName: string): string {
+  if (isVirtualProjectId(projectName)) return projectName
   const projectGroup = projectGroups.value.find((group) => group.projectName === projectName)
   return resolvePreferredLocalCwd(projectName, projectGroup?.threads[0]?.cwd?.trim() ?? '')
 }
@@ -2845,6 +2883,10 @@ function toWorktreeFolderNameDraft(projectName: string): string {
 function onBrowseProjectFiles(projectName: string): void {
   const targetCwd = getProjectCwd(projectName)
   if (!targetCwd || typeof window === 'undefined') return
+  if (isVirtualProjectId(projectName)) {
+    window.open(`/codex-api/project-files?${new URLSearchParams({ id: projectName })}`, '_blank', 'noopener,noreferrer')
+    return
+  }
   window.open(`/codex-local-browse${encodeURI(targetCwd)}`, '_blank', 'noopener,noreferrer')
 }
 
@@ -2948,7 +2990,7 @@ async function exportProjectZipForCwd(targetCwd: string): Promise<void> {
     projectZipExportStatus.value = { phase: 'idle', loaded: 0, total: null, blob: null, fileName: '', error: '' }
     if (error instanceof DOMException && error.name === 'AbortError') return
     const message = error instanceof Error ? error.message : 'Failed to export project.'
-    window.alert(message)
+    notifyOperation(message)
   }
 }
 
@@ -2965,7 +3007,7 @@ async function onCreateProjectWorktree(projectName: string): Promise<void> {
   const normalizedWorktreeName = worktreeName.trim()
   if (!normalizedWorktreeName) return
   if (normalizedWorktreeName.includes('/') || normalizedWorktreeName.includes('\\') || normalizedWorktreeName === '.' || normalizedWorktreeName === '..') {
-    window.alert('Worktree name must be a single folder name.')
+    notifyOperation('Worktree name must be a single folder name.')
     return
   }
 
@@ -2988,7 +3030,7 @@ async function onCreateProjectWorktree(projectName: string): Promise<void> {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create worktree.'
-    window.alert(message)
+    notifyOperation(message)
   }
 }
 
@@ -3002,7 +3044,7 @@ function resolveSelectedThreadProjectCwd(): string {
 
 function onStartNewThreadFromToolbar(): void {
   const thread = route.name === 'thread' && !isSettingsOpen.value ? selectedThread.value : null
-  newThreadCwd.value = thread?.cwd && !isProjectlessChatPath(thread.cwd) ? thread.cwd.trim() : ''
+  newThreadCwd.value = thread && isVirtualProjectId(thread.projectName) ? thread.projectName : thread?.cwd && !isProjectlessChatPath(thread.cwd) ? thread.cwd.trim() : ''
   isSettingsOpen.value = false
   newThreadRuntime.value = 'local'
   if (isMobile.value) setSidebarCollapsed(true)
@@ -3019,6 +3061,7 @@ function onStartProjectlessNewChat(): void {
 }
 
 async function loadGitRepoStatus(cwdRaw: string): Promise<void> {
+  if (isVirtualProjectId(cwdRaw)) return
   const cwd = cwdRaw.trim()
   if (!cwd || Object.prototype.hasOwnProperty.call(gitRepoStatusByCwd.value, cwd)) return
 
@@ -3052,11 +3095,11 @@ async function loadGitRepoStatus(cwdRaw: string): Promise<void> {
 
 async function onEditProject(projectName: string): Promise<void> {
   const group = projectGroups.value.find(entry => entry.projectName === projectName)
-  const root = resolvePreferredLocalCwd(projectName, group?.threads[0]?.cwd?.trim() ?? '')
+  const root = isVirtualProjectId(projectName) ? projectName : resolvePreferredLocalCwd(projectName, group?.threads[0]?.cwd?.trim() ?? '')
   if (!root) return
   projectEditingId.value = projectName
   projectNameEdited.value = true
-  projectSetupBaseDir.value = root
+  projectSetupBaseDir.value = isVirtualProjectId(root) ? '' : root
   projectNameDraft.value = projectDisplayNameById.value[projectName] || projectDisplayName(root, workspaceRootOptionsState.value.labels)
   projectSetupMode.value = 'create'
   projectDirectoryDraft.value = ''
@@ -3082,6 +3125,16 @@ async function onRemoveProject(projectName: string): Promise<void> {
   await removeProject(projectName)
   await loadWorkspaceRootOptionsState()
   void refreshDefaultProjectName()
+}
+
+async function onMoveConversationProject(payload: { cwd: string; projectId: string | null }): Promise<void> {
+  try {
+    await assignConversationProject(payload.cwd, payload.projectId)
+    await loadWorkspaceRootOptionsState()
+    await refreshAll({ includeSelectedThreadMessages: false, forceThreadRefresh: true })
+  } catch (error) {
+    notifyOperation(error instanceof Error ? error.message : 'Failed to save project')
+  }
 }
 
 function onReorderProject(payload: { projectName: string; toIndex: number }): void {
@@ -3131,6 +3184,7 @@ async function onForkThreadFromMessage(payload: { threadId: string; turnId: stri
   if (selectedThreadId.value !== forkedThreadId) {
     await selectThread(forkedThreadId)
   }
+  notifyOperation('分支已创建', 'success', forkedThreadId)
   if (isMobile.value) setSidebarCollapsed(true)
 }
 
@@ -3495,6 +3549,12 @@ async function onInsertTaskExcerpt(text: string) {
 }
 watch(() => selectedThreadId.value, () => { isTaskSearchOpen.value = false })
 const appCommandRequest = ref<AppCommandRequest | null>(null)
+const commandActionError = ref('')
+watch(commandActionError, message => { if (message) notifyOperation(message, 'error', selectedThreadId.value || undefined) }, { flush: 'sync' })
+watch(composerThreadContextId, (_next, previous) => {
+  commandActionError.value = ''
+  if (previous) clearOperationToasts(previous)
+}, { flush: 'sync' })
 const commandContextSummary = computed(() => {
   if (isHomeRoute.value) return '新会话尚无上下文用量'
   const usage = selectedThreadTokenUsage.value
@@ -3503,10 +3563,16 @@ const commandContextSummary = computed(() => {
 })
 function onComposerCommand(request: AppCommandRequest) {
   if (isSwitchingAccounts.value) return
+  commandActionError.value = ''
+  const commandContextId = composerThreadContextId.value
   if (['new', 'resume', 'tasks', 'apps', 'plugins', 'mcp', 'automations', 'diff', 'copy', 'export'].includes(request.name)) {
     const navigation = ['new', 'resume', 'tasks', 'apps', 'plugins', 'mcp', 'automations', 'diff'].includes(request.name)
     if (navigation) request.complete()
-    void runAppCommand(request.name).then(() => { if (!navigation) request.complete() }).catch(cause => { desktopError.value = cause instanceof Error ? cause.message : '命令执行失败' })
+    void runAppCommand(request.name).then(() => { if (!navigation) request.complete() }).catch(cause => {
+      if (composerThreadContextId.value === commandContextId) {
+        commandActionError.value = cause instanceof Error ? cause.message : '命令执行失败'
+      }
+    })
     return
   }
   appCommandRequest.value = request
@@ -3524,7 +3590,7 @@ async function ensureCommandThread(objective?: string): Promise<string> {
 async function runAppCommand(name: AppCommandName, value?: string): Promise<void> {
   const threadId = isHomeRoute.value ? '' : selectedThreadId.value || ''
   if (['rename', 'fork', 'review', 'diff', 'copy', 'export'].includes(name) && !threadId) throw new Error('请先进入一个会话')
-  if (['review', 'fork'].includes(name) && isSelectedThreadInProgress.value) throw new Error('请等待当前任务结束后再操作')
+  if (name === 'review' && isSelectedThreadInProgress.value) throw new Error('请等待当前任务结束后再操作')
   switch (name) {
     case 'goal':
       if (!value) throw new Error('缺少目标会话')
@@ -3603,7 +3669,7 @@ async function hydrateQueuedMessage(messageId: string): Promise<void> {
     }
     threadComposerRef.value?.hydrateDraft(payload)
   } catch {
-    queueDraftError.value = '未能保存编辑关联；原消息仍保留在队列中，可点击“继续编辑”恢复'
+    queueDraftError.value = '编辑关联保存失败，可点击“继续编辑”恢复队列中的原消息'
   }
 }
 
@@ -3907,6 +3973,7 @@ function onCloseProjectSetupModal(): void {
 
 async function createProjectFromSetupModal(): Promise<string> {
   const input = projectSetupInput(normalizeAbsolutePath(projectSetupBaseDir.value), projectNameDraft.value)
+  if (isVirtualProjectId(projectEditingId.value)) input.path = projectEditingId.value
   return openProjectRoot(input.path, { ...input.options, createIfMissing: !projectEditingId.value, directories: projectDirectoryDraft.value.split('\n').map(path => path.trim()).filter(Boolean) })
 }
 
@@ -3934,9 +4001,10 @@ async function onSubmitProjectSetup(): Promise<void> {
     else newThreadCwd.value = normalizedPath
     pinProjectToTop(getProjectOrderNameForPath(normalizedPath))
     await loadWorkspaceRootOptionsState()
+    await refreshAll({ includeSelectedThreadMessages: false, forceThreadRefresh: true })
     isProjectSetupModalOpen.value = false
   } catch (error) {
-    projectSetupError.value = error instanceof Error ? error.message : 'Failed to create or clone project.'
+    notifyOperation(error instanceof Error ? error.message : 'Failed to create or clone project.')
   } finally {
     isProjectSetupSubmitting.value = false
   }
@@ -3970,7 +4038,7 @@ async function finishProjectImport(
     await refreshDefaultProjectName()
   } catch (error) {
     const message = error instanceof Error ? error.message : fallbackMessage
-    window.alert(message)
+    notifyOperation(message)
   } finally {
     isProjectImporting.value = false
     if (input) input.value = ''
@@ -3986,7 +4054,7 @@ async function onDirectProjectImportFileChange(event: Event): Promise<void> {
 }
 
 async function onOpenExistingFolder(): Promise<void> {
-  const startPath = newThreadCwd.value.trim() || await resolveProjectBaseDirectory()
+  const startPath = composerCwd.value.trim() || await resolveProjectBaseDirectory()
   if (!startPath) return
   isCreateFolderOpen.value = false
   isExistingFolderPickerOpen.value = true
@@ -4080,7 +4148,7 @@ async function onOpenCreateFolderPanel(): Promise<void> {
     return
   }
   if (!isExistingFolderPickerOpen.value) {
-    const startPath = newThreadCwd.value.trim() || await resolveProjectBaseDirectory()
+    const startPath = composerCwd.value.trim() || await resolveProjectBaseDirectory()
     if (!startPath) return
     isExistingFolderPickerOpen.value = true
     existingFolderFilter.value = ''
@@ -4198,9 +4266,9 @@ async function refreshDefaultProjectName(): Promise<void> {
 }
 
 function getProjectBaseDirectory(): string {
-  const selected = newThreadCwd.value.trim()
+  const selected = composerCwd.value.trim()
   if (selected) return getPathParent(selected)
-  const first = newThreadFolderOptions.value[0]?.value?.trim() ?? ''
+  const first = newThreadFolderOptions.value.find(option => !isVirtualProjectId(option.value))?.value?.trim() ?? ''
   if (first) return getPathParent(first)
   return homeDirectory.value.trim()
 }
@@ -4217,12 +4285,13 @@ async function loadWorkspaceRootOptionsState(): Promise<void> {
   try {
     const state = await getWorkspaceRootsState()
     workspaceRootOptionsState.value = {
+      virtualProjects: state.virtualProjects ?? [],
       order: [...state.order],
       labels: { ...state.labels },
       projectOrder: [...state.projectOrder],
     }
   } catch {
-    workspaceRootOptionsState.value = { order: [], labels: {}, projectOrder: [] }
+    workspaceRootOptionsState.value = { order: [], labels: {}, projectOrder: [], virtualProjects: [] }
   }
 }
 
@@ -4521,7 +4590,7 @@ async function onProviderChange(provider: string): Promise<void> {
     providerError.value = ''
     await refreshAll({ includeSelectedThreadMessages: false, providerChanged: true, awaitAncillaryRefreshes: true })
   } catch (err) {
-    providerError.value = err instanceof Error ? err.message : 'Failed to switch provider'
+    notifyOperation(err instanceof Error ? err.message : 'Failed to switch provider')
   } finally {
     freeModeLoading.value = false
   }
@@ -4540,7 +4609,7 @@ async function saveCustomEndpoint(): Promise<void> {
     freeModeEnabled.value = true
     await refreshAll({ includeSelectedThreadMessages: false, providerChanged: true, awaitAncillaryRefreshes: true })
   } catch (err) {
-    providerError.value = err instanceof Error ? err.message : 'Failed to save custom endpoint'
+    notifyOperation(err instanceof Error ? err.message : 'Failed to save custom endpoint')
   } finally {
     freeModeCustomKeySaving.value = false
   }
@@ -4562,7 +4631,7 @@ async function setOpenRouterWireApi(nextWireApi: 'responses' | 'chat'): Promise<
     await refreshAll({ includeSelectedThreadMessages: false, providerChanged: true, awaitAncillaryRefreshes: true })
   } catch (err) {
     openRouterWireApi.value = previousWireApi
-    providerError.value = err instanceof Error ? err.message : 'Failed to save OpenRouter API format'
+    notifyOperation(err instanceof Error ? err.message : 'Failed to save OpenRouter API format')
   } finally {
     freeModeCustomKeySaving.value = false
   }
@@ -4582,7 +4651,7 @@ async function saveOpencodeZen(): Promise<void> {
     freeModeEnabled.value = true
     await refreshAll({ includeSelectedThreadMessages: false, providerChanged: true, awaitAncillaryRefreshes: true })
   } catch (err) {
-    providerError.value = err instanceof Error ? err.message : 'Failed to save OpenCode Zen config'
+    notifyOperation(err instanceof Error ? err.message : 'Failed to save OpenCode Zen config')
   } finally {
     freeModeCustomKeySaving.value = false
   }
@@ -5050,10 +5119,11 @@ async function submitFirstMessageForNewThread(
         }
         return false
       }
-    } else if (!targetCwd.trim()) {
-      const directory = await createProjectlessThreadDirectory(text)
+    } else if (!targetCwd.trim() || isVirtualProjectId(targetCwd)) {
+      const projectId = isVirtualProjectId(targetCwd) ? targetCwd : undefined
+      const directory = await createProjectlessThreadDirectory(text, projectId)
+      if (projectId) invalidateWorkspaceRootsStateCache()
       targetCwd = directory.cwd
-      newThreadCwd.value = directory.cwd
     }
     const threadId = await sendMessageToNewThread(text, targetCwd, imageUrls, skills, fileAttachments)
     if (!threadId) return false
@@ -5307,7 +5377,7 @@ async function loadWorktreeBranches(sourceCwd: string): Promise<void> {
 }
 
 .composer-runtime-error {
-  @apply flex w-full items-start justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-800 shadow-sm;
+  @apply flex w-full max-w-[min(var(--chat-column-max,72rem),100%)] mx-auto items-start justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-800 shadow-sm;
 }
 
 .visible-error-with-feedback {

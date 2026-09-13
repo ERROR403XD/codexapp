@@ -1,3 +1,10 @@
+import { readProjectArchiveMembers } from './projectOrganizationArchive.js'
+import { VirtualProjectStore } from './virtualProjects.js'
+import { createDirectoryListingHtml } from './localBrowseUi.js'
+import { isVirtualProjectId, type VirtualProject } from '../projectOrganization.js'
+import { IgnoredQuotaErrors } from './ignoredQuotaErrors.js'
+import { ThreadInterruptionList } from './threadInterruptionList.js'
+import { SidebarThreadStatusReader } from './sidebarThreadStatusReader.js'
 import { getCustomConnectionStore, customRuntimeConfig } from './customConnectionStore.js'
 import { getWebUiBrandingStore } from './webUiBrandingStore.js'
 import { customConnectionModels } from '../customConnections.js'
@@ -17,6 +24,7 @@ import { changesThreadSearch } from '../threadSearchEvents.js'
 import { deliveryView } from '../delivery.js'
 import { DeliveryStore } from './deliveryStore.js'
 import { DeliveryService } from './deliveryService.js'
+import type { AutomationPreparation } from './automationPreparation.js'
 import { inspectDelivery } from './deliveryHistory.js'
 import { ThreadSearch, SEARCH_BODY_TURN_LIMIT, extractThreadSearchText } from './threadSearch.js'
 import { ThreadHistory } from './threadHistory.js'
@@ -125,6 +133,7 @@ type ServerRequestReply = {
 }
 
 export type WorkspaceRootsState = {
+  virtualProjects?: VirtualProject[]
   order: string[]
   labels: Record<string, string>
   active: string[]
@@ -1339,20 +1348,21 @@ async function* singleZipBufferChunk(data: Buffer): AsyncGenerator<Buffer> {
   yield data
 }
 
-async function streamProjectZip(root: string, res: ServerResponse, virtualEntries: ProjectZipVirtualEntry[] = []): Promise<void> {
+async function streamProjectZip(root: string, res: ServerResponse, virtualEntries: ProjectZipVirtualEntry[] = [], sourceRoots = [{ root, prefix: '' }]): Promise<void> {
   const centralEntries: ZipCentralDirectoryEntry[] = []
   let offset = 0
-  const ignoreMatcher = await createProjectZipIgnoreMatcher(root)
-
-  for await (const entry of walkProjectZipEntries(root, ignoreMatcher)) {
-    const zipPath = toZipEntryPath(root, entry.path, entry.isDirectory)
-    if (zipPath === '.codex-project/manifest.json') continue
-    offset = await writeProjectZipEntry(res, centralEntries, offset, {
-      zipPath,
-      mtime: entry.mtime,
-      isDirectory: entry.isDirectory,
-      chunks: entry.isDirectory ? singleZipBufferChunk(Buffer.alloc(0)) : createReadStream(entry.path) as AsyncIterable<Buffer>,
-    })
+  for (const source of sourceRoots) {
+    const ignoreMatcher = await createProjectZipIgnoreMatcher(source.root)
+    for await (const entry of walkProjectZipEntries(source.root, ignoreMatcher)) {
+      const zipPath = source.prefix + toZipEntryPath(source.root, entry.path, entry.isDirectory)
+      if (zipPath === '.codex-project/manifest.json') continue
+      offset = await writeProjectZipEntry(res, centralEntries, offset, {
+        zipPath,
+        mtime: entry.mtime,
+        isDirectory: entry.isDirectory,
+        chunks: entry.isDirectory ? singleZipBufferChunk(Buffer.alloc(0)) : createReadStream(entry.path) as AsyncIterable<Buffer>,
+      })
+    }
   }
 
   for (const entry of virtualEntries) {
@@ -1808,12 +1818,14 @@ function mergeImportedThreadsIntoThreadListResult(result: unknown, params: unkno
   }
 }
 
-async function collectProjectChatZipEntries(projectRoot: string): Promise<ProjectZipVirtualEntry[]> {
-  const canonicalProjectRoot = await realpath(projectRoot)
+async function collectProjectChatZipEntries(projectRoot: string | VirtualProject): Promise<ProjectZipVirtualEntry[]> {
+  const organization = typeof projectRoot === 'string' ? null : projectRoot
+  const canonicalProjectRoots = await Promise.all((typeof projectRoot === 'string' ? [projectRoot] : projectRoot.cwds).map(path => realpath(path).catch(() => resolve(path))))
   const codexHome = getCodexHomeDir()
   const threadTitles = await readMergedThreadTitleCache()
   const stateDbThreadMetadata = readStateDbThreadExportMetadata()
   const exportedTitles: Record<string, string> = {}
+  const exportedConversationCwds: Record<string, string> = {}
   const exportedThreads: Record<string, ExportedThreadMetadata> = {}
   const roots = [
     { disk: join(codexHome, 'sessions'), zip: '.codex-project/chats/sessions' },
@@ -1824,10 +1836,12 @@ async function collectProjectChatZipEntries(projectRoot: string): Promise<Projec
     data: Buffer.from(JSON.stringify({
       version: 1,
       exportedAt: new Date().toISOString(),
-      projectName: basename(canonicalProjectRoot) || 'project',
+      projectName: organization?.label || basename(canonicalProjectRoots[0] || '') || 'project',
+      ...(organization ? { organization: { version: 1, members: organization.cwds.map((cwd, index) => ({ cwd, prefix: `files/${String(index + 1).padStart(6, '0')}/` })) } } : {}),
     }, null, 2)),
     mtime: new Date(),
   }]
+  if (!canonicalProjectRoots.length) return entries
 
   for (const root of roots) {
     for await (const sessionPath of walkFiles(root.disk)) {
@@ -1846,9 +1860,11 @@ async function collectProjectChatZipEntries(projectRoot: string): Promise<Projec
       } catch {
         canonicalSessionCwd = isAbsolute(sessionCwd) ? resolve(sessionCwd) : resolve(sessionCwd)
       }
-      if (!isSameOrDescendantPath(canonicalSessionCwd, canonicalProjectRoot)) continue
+      const memberIndex = canonicalProjectRoots.findIndex(root => organization ? root === canonicalSessionCwd : isSameOrDescendantPath(canonicalSessionCwd, root))
+      if (memberIndex < 0) continue
       const rel = relative(root.disk, sessionPath).split(sep).join('/')
       const zipPath = `${root.zip}/${rel}`
+      if (organization && sessionCwd !== organization.cwds[memberIndex]) exportedConversationCwds[zipPath] = organization.cwds[memberIndex]
       const sessionId = readSessionMetaId(raw)
       const stateMetadata = sessionId ? stateDbThreadMetadata.get(sessionId) : undefined
       const title = readNonEmptyString(stateMetadata?.title) || (sessionId ? readNonEmptyString(threadTitles.titles[sessionId]) : '')
@@ -1865,6 +1881,11 @@ async function collectProjectChatZipEntries(projectRoot: string): Promise<Projec
         mtime: new Date(),
       })
     }
+  }
+  if (organization && Object.keys(exportedConversationCwds).length) {
+    const manifest = JSON.parse(entries[0].data!.toString('utf8'))
+    manifest.organization.conversationCwds = exportedConversationCwds
+    entries[0].data = Buffer.from(JSON.stringify(manifest, null, 2))
   }
   if (Object.keys(exportedTitles).length > 0 || Object.keys(exportedThreads).length > 0) {
     entries.push({
@@ -1936,15 +1957,29 @@ async function importProjectZip(buffer: Buffer, destinationParent: string): Prom
   const entries = parseStoredProjectZip(buffer)
   const manifestEntry = entries.find((entry) => entry.path === '.codex-project/manifest.json' && !entry.isDirectory)
   let projectName = 'imported-project'
+  let organizationManifest: unknown
   if (manifestEntry) {
     try {
       const manifest = asRecord(JSON.parse(manifestEntry.data.toString('utf8')) as unknown)
       projectName = readNonEmptyString(manifest?.projectName) || projectName
+      organizationManifest = manifest?.organization
     } catch {
       projectName = 'imported-project'
     }
   }
-  projectName = projectName.replace(/[\\/]+/g, '-').replace(/[\u0000-\u001f]+/g, '').trim() || 'imported-project'
+  if (organizationManifest === undefined) projectName = projectName.replace(/[\\/]+/g, '-').replace(/[\u0000-\u001f]+/g, '').trim() || 'imported-project'
+  const organizationMembers = readProjectArchiveMembers(organizationManifest)
+  const conversationCwds = normalizeStringRecord(asRecord(organizationManifest)?.conversationCwds)
+  const memberCwdForEntry = (entry: { path: string; data: Buffer }) => Object.hasOwn(conversationCwds, entry.path) ? conversationCwds[entry.path] : readSessionMetaCwd(entry.data.toString('utf8'))
+  if (organizationMembers) {
+    for (const entry of entries) {
+      if (entry.path.startsWith('.codex-project/chats/')) {
+        if (entry.path.endsWith('.jsonl') && !organizationMembers.some(member => member.cwd === memberCwdForEntry(entry))) throw new Error('Invalid project conversation membership')
+      } else if (entry.path !== '.codex-project/manifest.json' && !organizationMembers.some(member => entry.path.startsWith(member.prefix))) {
+        throw new Error('Invalid project file membership')
+      }
+    }
+  }
   const titleEntry = entries.find((entry) => entry.path === '.codex-project/chats/thread-titles.json' && !entry.isDirectory)
   const importedThreadMetadata = new Map<string, ExportedThreadMetadata>()
   if (titleEntry) {
@@ -1974,11 +2009,20 @@ async function importProjectZip(buffer: Buffer, destinationParent: string): Prom
   }
 
   const parent = await realpath(destinationParent)
-  let projectPath = join(parent, projectName)
-  for (let index = 2; existsSync(projectPath); index += 1) {
-    projectPath = join(parent, `${projectName}-${index}`)
+  let projectPath: string
+  const memberTargets = new Map<string, string>()
+  if (organizationMembers) {
+    const project = await getVirtualProjectStore().save(undefined, projectName)
+    projectPath = project.id
+    for (const member of organizationMembers) {
+      const directory = await createProjectConversationDirectory(basename(member.cwd), project.id)
+      memberTargets.set(member.cwd, directory.cwd)
+    }
+  } else {
+    projectPath = join(parent, projectName)
+    for (let index = 2; existsSync(projectPath); index += 1) projectPath = join(parent, `${projectName}-${index}`)
+    await mkdir(projectPath, { recursive: true })
   }
-  await mkdir(projectPath, { recursive: true })
 
   let importedSessions = 0
   const importedSessionRecords: ImportedSessionRecord[] = []
@@ -1988,9 +2032,10 @@ async function importProjectZip(buffer: Buffer, destinationParent: string): Prom
     .map((entry) => {
       const importedMetadata = importedThreadMetadata.get(entry.path)
       const sourceSessionRaw = entry.data.toString('utf8')
-      const sourceRecord = readImportedSessionRecord(sourceSessionRaw, entry.path, projectPath, readSessionMetaId(sourceSessionRaw) || randomUUID(), importedMetadata?.title ?? '')
+      const targetCwd = organizationMembers ? memberTargets.get(memberCwdForEntry(entry))! : projectPath
+      const sourceRecord = readImportedSessionRecord(sourceSessionRaw, entry.path, targetCwd, readSessionMetaId(sourceSessionRaw) || randomUUID(), importedMetadata?.title ?? '')
       const updatedAtMs = (importedMetadata?.updatedAtMs ?? 0) > 0 ? importedMetadata?.updatedAtMs ?? 0 : sourceRecord.updatedAtMs
-      return { entry, importedMetadata, sourceSessionRaw, sourceRecord, updatedAtMs }
+      return { entry, importedMetadata, sourceSessionRaw, sourceRecord, updatedAtMs, targetCwd }
     })
     .sort((first, second) => second.updatedAtMs - first.updatedAtMs)
 
@@ -1998,9 +2043,9 @@ async function importProjectZip(buffer: Buffer, destinationParent: string): Prom
     const importedThreadId = randomUUID()
     const target = join(importedSessionsRoot, 'imported', `${String(index + 1).padStart(6, '0')}-${importedThreadId}.jsonl`)
     await mkdir(dirname(target), { recursive: true })
-    const importedSessionRaw = rewriteImportedSession(chatEntry.sourceSessionRaw, projectPath, importedThreadId)
+    const importedSessionRaw = rewriteImportedSession(chatEntry.sourceSessionRaw, chatEntry.targetCwd, importedThreadId)
     await writeFile(target, importedSessionRaw, 'utf8')
-    const importedRecord = readImportedSessionRecord(importedSessionRaw, target, projectPath, importedThreadId, chatEntry.importedMetadata?.title ?? '')
+    const importedRecord = readImportedSessionRecord(importedSessionRaw, target, chatEntry.targetCwd, importedThreadId, chatEntry.importedMetadata?.title ?? '')
     if (chatEntry.updatedAtMs > 0) {
       importedRecord.updatedAtMs = chatEntry.updatedAtMs
       importedRecord.createdAtMs = Math.min(chatEntry.sourceRecord.createdAtMs, importedRecord.updatedAtMs)
@@ -2020,8 +2065,11 @@ async function importProjectZip(buffer: Buffer, destinationParent: string): Prom
     if (entry.path.startsWith('.codex-project/chats/')) {
       continue
     }
-    const target = join(projectPath, entry.path)
-    if (!isSameOrDescendantPath(target, projectPath)) throw new Error('Project ZIP contains an unsafe path')
+    if (organizationMembers && entry.path === '.codex-project/manifest.json') continue
+    const member = organizationMembers?.find(member => entry.path.startsWith(member.prefix))
+    const targetRoot = member ? memberTargets.get(member.cwd)! : projectPath
+    const target = join(targetRoot, member ? entry.path.slice(member.prefix.length) : entry.path)
+    if (!isSameOrDescendantPath(target, targetRoot)) throw new Error('Project ZIP contains an unsafe path')
     if (entry.isDirectory) {
       await mkdir(target, { recursive: true })
     } else {
@@ -2030,7 +2078,8 @@ async function importProjectZip(buffer: Buffer, destinationParent: string): Prom
     }
   }
 
-  await persistWorkspaceRoot(projectPath, projectName)
+  if (organizationMembers) await updateWorkspaceRootsState(state => ({ ...state, projectOrder: prependUniqueString(projectPath, state.projectOrder) }))
+  else await persistWorkspaceRoot(projectPath, projectName)
   return { projectPath, importedSessions }
 }
 
@@ -3953,7 +4002,7 @@ async function assertNoTrackedGitChanges(repoRoot: string): Promise<void> {
     .map((line) => line.trimEnd())
     .filter((line) => line && !line.startsWith('?? '))
   if (trackedChanges.length > 0) {
-    throw new Error('Cannot switch branches or reset with tracked uncommitted changes. Commit, stash, or discard tracked changes first. Untracked files are allowed unless Git would overwrite them.')
+    throw new Error('切换分支或重置前，请先提交、Stash 或丢弃已跟踪的改动；未跟踪文件仅在会被覆盖时需处理。')
   }
 }
 
@@ -4282,6 +4331,26 @@ function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
   return normalized === '127.0.0.1' || normalized === '::1'
 }
 
+let virtualProjectStore: VirtualProjectStore | undefined
+function getVirtualProjectStore(): VirtualProjectStore {
+  const home = getCodexHomeDir()
+  if (!virtualProjectStore || virtualProjectStore.path !== join(home, 'codexapp-projects.json')) virtualProjectStore = new VirtualProjectStore(home)
+  return virtualProjectStore
+}
+
+async function createProjectConversationDirectory(prompt: string | null, projectId: string) {
+  const project = await getVirtualProjectStore().get(projectId)
+  const directory = await createProjectlessThreadDirectory(prompt)
+  await getVirtualProjectStore().assign(directory.cwd, project.id)
+  return directory
+}
+
+async function createAutomationProjectConversationDirectory(prompt: string, projectId: string) {
+  const directory = await createProjectlessThreadDirectory(prompt)
+  await getVirtualProjectStore().assignIfPresent(directory.cwd, projectId)
+  return directory
+}
+
 function getCodexGlobalStatePath(): string {
   return join(getCodexHomeDir(), '.codex-global-state.json')
 }
@@ -4520,7 +4589,7 @@ async function writeProjectCronAutomation(input: {
   if (!projectName || !name || !prompt || !rrule) {
     throw new Error('projectName, name, prompt, and rrule are required')
   }
-  if (!isAbsoluteLikePath(projectName)) {
+  if (!isAbsoluteLikePath(projectName) && !isVirtualProjectId(projectName)) {
     throw new Error('Project automation cwd must be an absolute path')
   }
 
@@ -4563,7 +4632,7 @@ async function writeProjectCronAutomation(input: {
 async function deleteProjectCronAutomation(projectName: string, automationId = ''): Promise<boolean> {
   const normalizedProjectName = projectName.trim()
   const normalizedAutomationId = automationId.trim()
-  if (!normalizedProjectName || !isAbsoluteLikePath(normalizedProjectName)) return false
+  if (!normalizedProjectName || (!isAbsoluteLikePath(normalizedProjectName) && !isVirtualProjectId(normalizedProjectName))) return false
   if (normalizedAutomationId) {
     const automation = await readProjectCronAutomation(normalizedProjectName, normalizedAutomationId)
     if (!automation) return false
@@ -5018,6 +5087,7 @@ export async function canonicalizeWorkspaceRootsState(
     active,
     projectOrder,
     remoteProjects: state.remoteProjects.map((project) => ({ ...project })),
+    ...(state.virtualProjects ? { virtualProjects: state.virtualProjects } : {}),
   }
 }
 
@@ -5072,9 +5142,11 @@ async function readWorkspaceRootsState(): Promise<WorkspaceRootsState> {
     payload = {}
   }
 
+  const virtualProjects = await getVirtualProjectStore().list()
   return await canonicalizeWorkspaceRootsState({
+    virtualProjects,
     order: normalizeStringArray(payload['electron-saved-workspace-roots']),
-    labels: normalizeStringRecord(payload['electron-workspace-root-labels']),
+    labels: { ...normalizeStringRecord(payload['electron-workspace-root-labels']), ...Object.fromEntries(virtualProjects.map(project => [project.id, project.label])) },
     active: normalizeStringArray(payload['active-workspace-roots']),
     projectOrder: normalizeStringArray(payload['project-order']),
     remoteProjects: normalizeRemoteProjects(payload['remote-projects']),
@@ -5093,7 +5165,7 @@ export async function writeWorkspaceRootsState(nextState: WorkspaceRootsState): 
   }
 
   payload['electron-saved-workspace-roots'] = normalizeStringArray(state.order)
-  payload['electron-workspace-root-labels'] = normalizeStringRecord(state.labels)
+  payload['electron-workspace-root-labels'] = normalizeStringRecord(Object.fromEntries(Object.entries(state.labels).filter(([id]) => !isVirtualProjectId(id))))
   payload['active-workspace-roots'] = normalizeStringArray(state.active)
   payload['project-order'] = normalizeStringArray(state.projectOrder)
 
@@ -5502,6 +5574,7 @@ export class AppServerProcess {
     return boundedQuotaRead(promise)
   }
   quotaBlocked: (threadId: string, turnId: string) => Promise<void> = async () => {}
+  notifyQuotaErrorIgnored(threadId: string): void { this.emitNotification({ method: 'thread/quotaErrorIgnored/changed', params: { threadId } }) }
   notifyQuotaResumeChanged(): void { this.emitNotification({ method: 'thread/quotaResume/changed', params: {} }) }
   async observeAccountQuota(payload: unknown): Promise<void> {
     this.quotaReadCache = null
@@ -5524,15 +5597,16 @@ export class AppServerProcess {
   // that session's boundary. Idle eviction closes the process and awaits exit.
   private readonly sessionWorkers = new AccountResourcePool<AppServerProcess>({
     capacity: 16,
-    idle: async worker => {
+    idle: async (worker, _key, scope) => {
       if (worker.currentTaskRun || worker.sessionOperations || worker.activeTurnThreadIds.size || worker.pendingServerRequests.size || worker.pending.size) return false
       if (!worker.process) return true
-      const terminals = await threadsWithBackgroundTerminals((method, params) => worker.rpc(method, params))
+      const terminals = await threadsWithBackgroundTerminals((method, params) => worker.rpc(method, params, undefined, scope))
       return !terminals.length && !worker.currentTaskRun && !worker.sessionOperations && !worker.activeTurnThreadIds.size && !worker.pendingServerRequests.size && !worker.pending.size
     },
     dispose: worker => worker.closeSession(),
   })
   private readonly taskRuns = new Map<string, AppServerProcess>()
+  private readonly taskPreparations = new Map<string, { scope: AutomationPreparation; worker?: AppServerProcess; owned: boolean; releaseRequested?: boolean }>()
   private readonly ownedThreadIds = new Set<string>()
   private nextWorkerId = 1
   private nextForwardedRequestId = -1
@@ -5552,12 +5626,13 @@ export class AppServerProcess {
     this.dispose()
     await this.closingSession
   }
-  private async sessionWorker(key: string): Promise<AppServerProcess | null> {
+  private async sessionWorker(key: string, scope?: AutomationPreparation): Promise<AppServerProcess | null> {
+    scope?.assertActive()
     const owned = this.threadWorker(key)
     if (owned) {
       // Touch the pool so an asynchronous idle check cannot evict this use.
       const entry = [...this.sessionWorkers].find(([, worker]) => worker === owned)!
-      return this.sessionWorkers.getOrCreate(entry[0], () => owned)
+      return this.sessionWorkers.getOrCreate(entry[0], () => owned, true, scope)
     }
     return this.sessionWorkers.getOrCreate(key, () => {
       const worker = new AppServerProcess({ isolatedTask: true, requestIdOffset: this.nextWorkerId++ * 1_000_000 })
@@ -5570,36 +5645,42 @@ export class AppServerProcess {
         this.forwardTaskNotification(this.remapTaskRequest(worker, notification))
       })
       return worker
-    })
+    }, true, scope)
   }
-  private async configureSession(storageId: string | null, kind: 'primary' | 'automation', ownerId: string): Promise<void> {
+  private async configureSession(storageId: string | null, kind: 'primary' | 'automation', ownerId: string, scope?: AutomationPreparation): Promise<void> {
+    scope?.assertActive()
     if (this.assignedStorageId !== storageId && (this.activeTurnThreadIds.size || this.pendingServerRequests.size)) {
-      throw Object.assign(new Error('此会话仍在执行，请等当前回合结束后更换账号。其他会话不受影响。'), { rpcRejected: true, submissionNotSent: true })
+      throw Object.assign(new Error('会话运行中，暂不能更换账号。'), { rpcRejected: true, submissionNotSent: true })
     }
     const coordinator = getAccountAuthCoordinator()
     const changed = this.assignedStorageId !== storageId
     const initialized = this.initialized
     const customChanged = changed && (!!getCustomConnectionStore().get(storageId) || !!getCustomConnectionStore().get(this.assignedStorageId))
     if (customChanged && this.process) await this.closeSession()
+    scope?.assertActive()
     this.assignedStorageId = storageId
     this.executionLease?.release()
     this.executionLease = storageId ? coordinator.executions.register({ storageId, kind, ownerId, protected: this.taskLease?.protected, busy: !!this.currentTaskRun || !!this.activeTurnThreadIds.size, disconnect: () => this.dispose() }) : null
     const lease = this.executionLease
     try {
-      await this.ensureInitialized()
+      await this.ensureInitialized(scope)
+      scope?.assertActive()
       if (initialized && changed && !customChanged) {
         if (storageId) {
-          const credential = await coordinator.getApiCredential(storageId)
+          const credential = scope ? await scope.read(() => coordinator.getApiCredential(storageId)) : await coordinator.getApiCredential(storageId)
+          scope?.assertActive()
           await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: credential.accessToken, chatgptAccountId: credential.accountId })
+          scope?.assertActive()
         } else {
           await this.closeSession()
-          await this.ensureInitialized()
+          scope?.assertActive()
+          await this.ensureInitialized(scope)
         }
         this.quotaReadCache = null
       }
       lease?.assertCurrent()
     } catch (error) {
-      this.dispose()
+      if (!scope?.signal.aborted || error !== scope.signal.reason) this.dispose()
       throw error
     }
   }
@@ -5611,36 +5692,81 @@ export class AppServerProcess {
   }
   taskAccountBusy(): boolean { return !!this.currentTaskRun }
 
-  async acquireTaskAccount(runId: string, settings: import('../automationOptions.js').AutomationModelSettings & { targetThreadId?: string | null }): Promise<boolean> {
+  beginTaskPreparation(runId: string, scope: AutomationPreparation): void {
+    const entry = { scope, owned: false } as { scope: AutomationPreparation; worker?: AppServerProcess; owned: boolean; releaseRequested?: boolean }
+    this.taskPreparations.set(runId, entry)
+    scope.onCancel(async () => {
+      const worker = entry.worker
+      if (!entry.owned || !worker || worker.currentTaskRun !== runId
+        || worker.activeTurnThreadIds.size || worker.pendingServerRequests.size || worker.sessionOperations) return
+      await worker.closeOwnedPreparationProcess(scope)
+    })
+  }
+
+  private async closeOwnedPreparationProcess(scope: AutomationPreparation): Promise<void> {
+    if (this.activeTurnThreadIds.size || this.pendingServerRequests.size || this.sessionOperations) return
+    for (const id of this.ownedThreadIds) scope.discardedThreadIds.add(id)
+    // Keep the account busy until confirmed process exit, even though dispose()
+    // normally releases a lease immediately for an explicit runtime shutdown.
+    const lease = this.executionLease
+    this.executionLease = null
+    const process = this.process
+    await this.closeSession()
+    if (process && process.exitCode === null && process.signalCode === null) throw new Error('自动化准备进程尚未退出')
+    lease?.release()
+  }
+
+  endTaskPreparation(runId: string): void {
+    const entry = this.taskPreparations.get(runId)
+    this.taskPreparations.delete(runId)
+    if (entry?.releaseRequested) this.releaseTaskAccount(runId)
+  }
+
+  async acquireTaskAccount(runId: string, settings: import('../automationOptions.js').AutomationModelSettings & { targetThreadId?: string | null }, scope?: AutomationPreparation): Promise<boolean> {
+    scope?.assertActive()
     if (this.taskRuns.has(runId)) return true
     if (this.taskRuns.size + this.acquiringAccounts.size >= 4 || this.acquiringAccounts.has(runId)) return false
     this.acquiringAccounts.add(runId)
     let worker: AppServerProcess | null = null
     try {
       const coordinator = getAccountAuthCoordinator()
-      const state = await coordinator.store.readState()
-      const config = settings.accountStorageId ? null : asRecord(asRecord(await this.rpc('config/read', {}))?.config)
+      const state = scope ? await scope.read(() => coordinator.store.readState()) : await coordinator.store.readState()
+      const config = settings.accountStorageId ? null : asRecord(asRecord(await this.rpc('config/read', {}, undefined, scope))?.config)
       const followsOtherProvider = !settings.accountStorageId && !settings.protected && config?.model_provider && config.model_provider !== 'openai'
-      await getCustomConnectionStore().ready
+      if (scope) await scope.read(() => getCustomConnectionStore().ready)
+      else await getCustomConnectionStore().ready
+      scope?.assertActive()
       const custom = settings.accountStorageId ? getCustomConnectionStore().get(settings.accountStorageId) : getCustomConnectionStore().active()
       if (custom && custom.wireApi !== 'responses') throw new Error('Codex 需要 Responses API')
       const storageId = custom?.storageId || (followsOtherProvider ? null : resolveAccountSelection(state, settings).storageId)
       if (coordinator.blocksApiAccount(settings.accountStorageId || null)) return false
       if (storageId && !custom) {
-        await coordinator.getApiCredential(storageId)
-        const account = await coordinator.refreshAccount(storageId)
+        if (scope) await scope.read(() => coordinator.getApiCredential(storageId))
+        else await coordinator.getApiCredential(storageId)
+        const account = scope ? await scope.read(() => coordinator.refreshAccount(storageId)) : await coordinator.refreshAccount(storageId)
         const fresh = account.quotaUpdatedAtIso && Date.now() - Date.parse(account.quotaUpdatedAtIso) < 30000
         const windows = [account.quotaSnapshot?.primary, account.quotaSnapshot?.secondary].filter(Boolean)
         if (fresh && windows.some(window => window!.usedPercent >= 100)) return false
-        try { await coordinator.assertSubmissionAllowed(undefined, { storageId, protected: settings.protected }) }
+        try {
+          if (scope) await scope.read(() => coordinator.assertSubmissionAllowed(undefined, { storageId, protected: settings.protected }))
+          else await coordinator.assertSubmissionAllowed(undefined, { storageId, protected: settings.protected })
+        }
         catch { return false }
       }
-      worker = await this.sessionWorker(settings.targetThreadId || `run:${runId}`)
+      scope?.assertActive()
+      worker = await this.sessionWorker(settings.targetThreadId || `run:${runId}`, scope)
+      scope?.assertActive()
       if (!worker || worker.currentTaskRun || worker.sessionOperations || worker.activeTurnThreadIds.size || worker.pendingServerRequests.size) return false
       worker.taskLease = { runId, storageId, protected: settings.protected === true }
       worker.currentTaskRun = runId
       this.taskRuns.set(runId, worker)
-      await worker.configureSession(storageId, 'automation', runId)
+      const preparation = this.taskPreparations.get(runId)
+      if (preparation) {
+        preparation.worker = worker
+        preparation.owned = !settings.targetThreadId
+      }
+      await worker.configureSession(storageId, 'automation', runId, scope)
+      scope?.assertActive()
       return true
     } catch (error) {
       this.releaseTaskAccount(runId)
@@ -5653,6 +5779,11 @@ export class AppServerProcess {
     return this.taskRuns.get(runId)?.assignedStorageId
   }
   releaseTaskAccount(runId: string): void {
+    const preparation = this.taskPreparations.get(runId)
+    if (preparation) {
+      preparation.releaseRequested = true
+      return
+    }
     const worker = this.taskRuns.get(runId)
     if (!worker) return
     worker.currentTaskRun = null
@@ -5661,14 +5792,16 @@ export class AppServerProcess {
     this.taskRuns.delete(runId)
   }
 
-  async automationRpc(method: string, params: unknown, runId?: string): Promise<unknown> {
+  async automationRpc(method: string, params: unknown, runId?: string, preparationScope?: AutomationPreparation): Promise<unknown> {
+    const scope = runId ? this.taskPreparations.get(runId)?.scope : preparationScope
+    scope?.assertActive()
     const worker = runId ? this.taskRuns.get(runId) : this.threadWorker(readNonEmptyString(asRecord(params)?.threadId))
     if (!worker && runId) throw Object.assign(new Error('自动化账号连接已释放，本次操作未发送'), { rpcRejected: true, submissionNotSent: true })
-    if (!worker) return this.rpc(method, params)
+    if (!worker) return this.rpc(method, params, undefined, scope)
     const input = worker.taskLease?.storageId && ['thread/start', 'thread/resume'].includes(method)
       ? { ...asRecord(params), modelProvider: getCustomConnectionStore().get(worker.taskLease.storageId) ? `custom_${worker.taskLease.storageId}` : 'openai' }
       : params
-    return worker.rpc(method, input, worker.taskLease?.runId)
+    return worker.rpc(method, input, worker.taskLease?.runId, scope)
   }
   private remapTaskRequest(worker: AppServerProcess, notification: { method: string; params: unknown }): { method: string; params: unknown } {
     const params = asRecord(notification.params)
@@ -5781,6 +5914,18 @@ export class AppServerProcess {
       // No free-mode state or invalid — use defaults
     }
     return { args, env: extraEnv }
+  }
+
+  private async withRuntimeThreadProvider(params: unknown): Promise<Record<string, unknown>> {
+    const input = asRecord(params) ?? {}
+    const custom = this.runtimeOptions.isolatedTask ? getCustomConnectionStore().get(this.assignedStorageId) : undefined
+    if (custom) return { ...input, modelProvider: `custom_${custom.storageId}` }
+    const result = asRecord(await this.call('config/read', {}))
+    const config = asRecord(result?.config)
+    // Resume/fork otherwise inherit the rollout's provider, which may only
+    // exist in a previous custom worker. Use this worker's selected outlet;
+    // do not register other providers or mutate the global account selection.
+    return { ...input, modelProvider: readNonEmptyString(config?.model_provider) || 'openai' }
   }
 
   private getAppServerConfigSignature(config: { args: string[]; env: Record<string, string> }): string {
@@ -5897,6 +6042,20 @@ export class AppServerProcess {
     if (typeof message.id === 'number' && typeof message.method === 'string') {
       this.handleServerRequest(message.id, message.method, message.params ?? null)
     }
+  }
+
+  private ignoredErrorMarks: IgnoredQuotaErrors | null = null
+  get ignoredErrors(): IgnoredQuotaErrors {
+    return this.ignoredErrorMarks ??= new IgnoredQuotaErrors(getCodexHomeDir())
+  }
+
+  private interruptionList: ThreadInterruptionList | null = null
+  get interruptions(): ThreadInterruptionList {
+    return this.interruptionList ??= new ThreadInterruptionList(getCodexHomeDir(), this.ignoredErrors, (threadId, issues) => {
+      for (const listener of this.notificationListeners) {
+        listener({ method: 'codexapp/interruptions/changed', params: { threadId, issues } })
+      }
+    })
   }
 
   private completionList: ThreadCompletionList | null = null
@@ -6236,16 +6395,41 @@ export class AppServerProcess {
     })
   }
 
-  private async ensureInitialized(): Promise<void> {
-    await getCustomConnectionStore().ready
+  private readonly preparationReads = new Map<string, Promise<unknown>>()
+  private async readForPreparation(method: string, params: unknown, scope: AutomationPreparation): Promise<unknown> {
+    scope.assertActive()
+    const key = JSON.stringify([method, params])
+    let read = this.preparationReads.get(key)
+    if (!read) {
+      if (this.preparationReads.size >= 4) throw new Error('准备状态读取超时，仍有读取等待上游返回')
+      const flight = this.call(method, params).finally(() => {
+        if (this.preparationReads.get(key) === flight) this.preparationReads.delete(key)
+      })
+      this.preparationReads.set(key, flight)
+      void flight.catch(() => {})
+      read = flight
+    }
+    // Cancellation ends this caller's wait, not the native RPC's lifetime.
+    // Keep its actual pending slot and share retries until the response/exit.
+    return scope.read(() => read!)
+  }
+
+  private async ensureInitialized(scope?: AutomationPreparation): Promise<void> {
+    if (scope) await scope.read(() => getCustomConnectionStore().ready)
+    else await getCustomConnectionStore().ready
     if (this.closingSession) await this.closingSession
+    scope?.assertActive()
     if (this.initialized) return
     if (this.initializePromise) {
       await this.initializePromise
       return
     }
 
-    this.initializePromise = this.call('initialize', {
+    // Only a newly started process belongs to this preparation. An existing
+    // shared initialization completes under its original ownership.
+    const initializationScope = !this.process ? scope : undefined
+
+    const initialization = this.call('initialize', {
       clientInfo: {
         name: 'codex-web-local',
         version: '0.1.0',
@@ -6254,14 +6438,19 @@ export class AppServerProcess {
         experimentalApi: true,
       },
     }).then(async () => {
+      initializationScope?.assertActive()
       this.sendLine({
         jsonrpc: '2.0',
         method: 'initialized',
       })
       if (this.runtimeOptions.isolatedTask && this.assignedStorageId && !getCustomConnectionStore().get(this.assignedStorageId)) {
-        const credential = await getAccountAuthCoordinator().getApiCredential(this.assignedStorageId)
+        const credential = initializationScope
+          ? await initializationScope.read(() => getAccountAuthCoordinator().getApiCredential(this.assignedStorageId!))
+          : await getAccountAuthCoordinator().getApiCredential(this.assignedStorageId)
+        initializationScope?.assertActive()
         await this.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: credential.accessToken, chatgptAccountId: credential.accountId })
       }
+      initializationScope?.assertActive()
       if (this.runtimeOptions.isolatedTask && this.assignedStorageId && !this.executionLease) {
         this.executionLease = getAccountAuthCoordinator().executions.register({ storageId: this.assignedStorageId, kind: this.currentTaskRun ? 'automation' : 'primary', ownerId: this.currentTaskRun || [...this.ownedThreadIds][0] || 'session', busy: !!this.currentTaskRun, disconnect: () => this.dispose() })
       }
@@ -6284,13 +6473,18 @@ export class AppServerProcess {
         if (storageId && !getCustomConnectionStore().get(storageId) && this.initialized && this.process) await this.readRuntimeQuota(storageId)
       }).catch(() => undefined)
     }).finally(() => {
-      this.initializePromise = null
+      if (this.initializePromise === initialization) this.initializePromise = null
     })
-
-    await this.initializePromise
+    this.initializePromise = initialization
+    const process = this.process
+    initializationScope?.onCancel(async () => {
+      if (this.process === process) await this.closeOwnedPreparationProcess(initializationScope)
+    })
+    await initialization
   }
 
-  async rpc(method: string, params: unknown, taskId?: string): Promise<unknown> {
+  async rpc(method: string, params: unknown, taskId?: string, scope?: AutomationPreparation): Promise<unknown> {
+    scope?.assertActive()
     const coordinator = getAccountAuthCoordinator()
     const threadId = readNonEmptyString(asRecord(params)?.threadId)
     const mutatingTurn = ['turn/start', 'turn/steer', 'thread/compact/start', 'thread/goal/set'].includes(method)
@@ -6333,7 +6527,8 @@ export class AppServerProcess {
       }
       const owner = this.threadWorker(threadId)
       if (owner || (mutatingTurn && threadId) || ['thread/start', 'thread/resume', 'thread/fork'].includes(method)) {
-        const worker = await this.sessionWorker(method === 'thread/start' || method === 'thread/fork' ? `chat:${randomUUID()}` : threadId)
+        const worker = await this.sessionWorker(method === 'thread/start' || method === 'thread/fork' ? `chat:${randomUUID()}` : threadId, scope)
+        scope?.assertActive()
         if (!worker) throw Object.assign(new Error('会话运行资源已满，请先结束一个活动会话后重试'), { rpcRejected: true, submissionNotSent: true })
         const selectsAccount = mutatingTurn || ['thread/start', 'thread/resume', 'thread/fork'].includes(method)
         if (selectsAccount) worker.sessionOperations++
@@ -6347,14 +6542,16 @@ export class AppServerProcess {
           const input = worker.currentTaskRun && method === 'thread/resume'
             ? { threadId, excludeTurns: asRecord(params)?.excludeTurns === true }
             : params
-          return await worker.rpc(method, input, taskId)
+          return await worker.rpc(method, input, taskId, scope)
         } finally {
           if (selectsAccount) worker.sessionOperations--
         }
       }
     }
     this.disposeIfConfigChanged()
-    await this.ensureInitialized()
+    if (scope && !taskId) await scope.read(() => this.ensureInitialized())
+    else await this.ensureInitialized(scope)
+    scope?.assertActive()
     const customConnection = this.runtimeOptions.isolatedTask ? getCustomConnectionStore().get(this.assignedStorageId) : undefined
     const selectedCustom = getCustomConnectionStore().active()
     if (!this.runtimeOptions.isolatedTask && selectedCustom && method === 'model/list') return { data: customConnectionModels({ ...selectedCustom, hasApiKey: true }), nextCursor: null }
@@ -6374,10 +6571,19 @@ export class AppServerProcess {
       })
     }
     if (this.runtimeOptions.isolatedTask && mutatingTurn && threadId && !this.ownedThreadIds.has(threadId)) {
-      await this.call('thread/resume', { threadId, excludeTurns: true, ...(customConnection ? { modelProvider: `custom_${customConnection.storageId}`, model: customConnection.model } : {}) })
+      const resumeParams = await this.withRuntimeThreadProvider({
+        threadId,
+        excludeTurns: true,
+        ...(customConnection ? { model: customConnection.model } : {}),
+      })
+      await this.call('thread/resume', resumeParams)
       this.ownedThreadIds.add(threadId)
     }
-    if (customConnection && ['thread/start', 'thread/resume', 'thread/fork'].includes(method)) params = { ...asRecord(params), modelProvider: `custom_${customConnection.storageId}` }
+    if (method === 'thread/resume' || method === 'thread/fork') {
+      params = await this.withRuntimeThreadProvider(params)
+    } else if (customConnection && method === 'thread/start') {
+      params = { ...asRecord(params), modelProvider: `custom_${customConnection.storageId}` }
+    }
     if (customConnection && mutatingTurn) {
       const input = { ...asRecord(params) }
       const capability = customConnection.models.find(model => model.id === input.model) || customConnection.models.find(model => model.id === customConnection.model)
@@ -6391,7 +6597,11 @@ export class AppServerProcess {
       if (!capability?.serviceTiers?.length) delete input.serviceTier
       params = input
     }
-    const result = await this.call(method, params)
+    scope?.assertActive()
+    const result = scope && ['config/read', 'thread/read', 'thread/backgroundTerminals/list'].includes(method)
+      ? await this.readForPreparation(method, params, scope)
+      : await this.call(method, params)
+    scope?.assertActive()
     if (!this.runtimeOptions.isolatedTask && selectedCustom && method === 'config/read') {
       const response = asRecord(result)
       const config = asRecord(response?.config)
@@ -6711,8 +6921,8 @@ export class BackendQueueProcessor {
 
   async cancelAccountDeliveries(): Promise<void> {
     for (const row of await this.store.records()) {
-      if (row.status === 'sending') await this.store.unknown(row.message.id, '账号已移除，已切断执行连接；请核对会话历史')
-      else if (row.status === 'queued') await this.store.failed(row.message.id, row.revision, '账号已移除；请登录后手动重新发送')
+      if (row.status === 'sending') await this.store.unknown(row.message.id, '账号已移除，请核对会话历史')
+      else if (row.status === 'queued') await this.store.failed(row.message.id, row.revision, '账号已移除，请登录后重新发送')
       this.appServer.notifyQueueChanged(row.threadId)
     }
   }
@@ -6757,6 +6967,18 @@ export class BackendQueueProcessor {
     return state
   }
 
+  async readDeliveryStatuses(threadId: string, ids: string[]): Promise<Array<{ id: string; status: string; turnId?: string }>> {
+    if (!threadId || ids.length > 100 || ids.some(id => !/^[a-zA-Z0-9_-]{1,160}$/.test(id))) throw new Error('无效的发送记录查询')
+    const result: Array<{ id: string; status: string; turnId?: string }> = []
+    // Only completed receipts are read here. This must never call reconcile/process:
+    // observing the UI is not permission to submit or change account blocking.
+    for (const id of new Set(ids)) {
+      const receipt = await this.store.readReceipt(id)
+      if (receipt?.threadId === threadId) result.push({ id, status: receipt.status, turnId: receipt.turnId })
+    }
+    return result
+  }
+
   async submit(input: unknown): Promise<Record<string, unknown>> {
     const body = asRecord(input)
     if (body?.protocol !== 2) throw new Error('发送接口已更新，请刷新页面后重试')
@@ -6786,7 +7008,7 @@ export class BackendQueueProcessor {
 
   async mutate(input: unknown): Promise<{ state: ThreadQueueState; removed?: StoredQueuedMessage; delivered?: { id: string; turnId: string } }> {
     const body = asRecord(input)
-    if (body?.protocol !== 2) throw new Error('队列接口已更新，请刷新页面后重试；队列未修改')
+    if (body?.protocol !== 2) throw new Error('队列接口已更新，请刷新页面后重试')
     const threadId = readNonEmptyString(body.threadId)
     if (!threadId) throw new Error('缺少会话 ID')
     let removed: StoredQueuedMessage | undefined
@@ -7159,8 +7381,11 @@ function getSharedBridgeState(): SharedBridgeState {
   const threadCompactionGate = new ThreadCompactionGate((method, params) => appServer.rpc(method, params),
     async threadId => backendQueueProcessor.isIdentityChanging() || Boolean((await backendQueueProcessor.readState())[threadId]?.length))
   const automationEngine = new AutomationEngine(getCodexHomeDir(), createAutomationRuntime({
-    rpc: (method, params, runId) => appServer.automationRpc(method, params, runId),
-    acquireAccount: (runId, settings) => appServer.acquireTaskAccount(runId, settings),
+    resolveCwd: async (cwd, name) => isVirtualProjectId(cwd) ? (await createAutomationProjectConversationDirectory(name, cwd)).cwd : cwd,
+    rpc: (method, params, runId, scope) => appServer.automationRpc(method, params, runId, scope),
+    beginPreparation: (runId, scope) => appServer.beginTaskPreparation(runId, scope),
+    endPreparation: runId => appServer.endTaskPreparation(runId),
+    acquireAccount: (runId, settings, scope) => appServer.acquireTaskAccount(runId, settings, scope),
     releaseAccount: runId => appServer.releaseTaskAccount(runId),
     accountStorageId: runId => appServer.taskAccountStorageId(runId),
     accountBusy: () => false,
@@ -7180,6 +7405,9 @@ function getSharedBridgeState(): SharedBridgeState {
       const threadId = readNonEmptyString(params?.threadId)
       const turnId = readNonEmptyString(asRecord(params?.turn)?.id) || readNonEmptyString(params?.turnId)
       void appServer.completions.complete(threadId, turnId).catch(() => console.error('Failed to persist completion list'))
+    }
+    if (['turn/started', 'turn/completed', 'turn/cancelled', 'error', 'thread/status/changed'].includes(notification.method)) {
+      void appServer.interruptions.observe(notification.method, notification.params).catch(() => console.error('Failed to persist conversation problem indicators'))
     }
     quotaResume.observe(notification)
     if (notification.method === 'account/rateLimits/updated') void appServer.observeAccountQuota(notification.params).catch(() => undefined)
@@ -7225,10 +7453,34 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
     (method, params) => callRpcWithArchiveRecovery(appServer, method, params),
     async () => (await methodCatalog.snapshot()).features,
   )
-  const unsubscribeHistory = appServer.onNotification(({ params }) => {
+  const ignoredQuotaErrors = appServer.ignoredErrors
+  const sidebarThreadStatus = new SidebarThreadStatusReader(async (method, params) => {
+    const result = asRecord(await appServer.rpc(method, params))
+    const turns = Array.isArray(result?.data) ? result.data : null
+    if (!turns) throw new Error('Invalid final turn metadata')
+    const turn = asRecord(turns[0])
+    // Only enrich an already terminal failure. A recovered/completed turn must
+    // never become a quota interruption because of an earlier retry error.
+    if (turn && ['failed', 'interrupted'].includes(String(turn.status)) && !turn.error) {
+      const merged = asRecord(mergeStreamTurnErrorsIntoThreadResult(appServer, { thread: { id: params.threadId, turns } }))
+      const enriched = asRecord(merged?.thread)?.turns as { id?: string; status?: string; error?: unknown }[]
+      if (enriched?.[0]) await appServer.interruptions.record(String(params.threadId), enriched[0])
+      return { data: enriched }
+    }
+    if (turn) await appServer.interruptions.record(String(params.threadId), turn)
+    return result
+  }, Date.now, 8000, (threadId, turnId) => ignoredQuotaErrors.has(threadId, turnId))
+  const unsubscribeHistory = appServer.onNotification(({ method, params }) => {
     const value = asRecord(params)
     const threadId = readNonEmptyString(value?.threadId) || readNonEmptyString(value?.thread_id) || readNonEmptyString(asRecord(value?.thread)?.id)
-    if (threadId) history.invalidate(threadId)
+    if (threadId) {
+      if (method === 'thread/quotaErrorIgnored/changed') {
+        sidebarThreadStatus.invalidate(threadId)
+        return
+      }
+      history.invalidate(threadId)
+      if (['turn/started', 'turn/completed', 'turn/cancelled', 'thread/status/changed'].includes(method)) sidebarThreadStatus.invalidate(threadId)
+    }
   })
   const search = new ThreadSearch({
     list: async cursor => {
@@ -9023,6 +9275,13 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/delivery-status') {
+        setJson(res, 200, { data: await backendQueueProcessor.readDeliveryStatuses(
+          url.searchParams.get('threadId') || '', (url.searchParams.get('ids') || '').split(',').filter(Boolean),
+        ) })
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/delivery') {
         try {
           const result = await backendQueueProcessor.submit(await readJsonBody(req))
@@ -9034,7 +9293,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
       }
 
       if (req.method === 'PUT' && url.pathname === '/codex-api/thread-queue-state') {
-        setJson(res, 409, { error: '队列接口已更新，请刷新页面后重试；服务器队列未修改' })
+        setJson(res, 409, { error: '队列接口已更新，请刷新页面后重试' })
         return
       }
 
@@ -9049,8 +9308,25 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/project-files') {
+        const project = await getVirtualProjectStore().get(url.searchParams.get('id') ?? '')
+        res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        res.setHeader('Cache-Control', 'no-store')
+        res.end(await createDirectoryListingHtml(project.label, { entries: project.cwds.map(cwd => ({ name: basename(cwd), path: cwd })) }))
+        return
+      }
+
       if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/codex-api/project-zip') {
         const rawCwd = (url.searchParams.get('cwd') ?? '').trim()
+        if (isVirtualProjectId(rawCwd)) {
+          const project = await getVirtualProjectStore().get(rawCwd)
+          const roots = await Promise.all(project.cwds.map(async (cwd, index) => ({ root: await resolveAllowedProjectZipCwd(cwd), prefix: `files/${String(index + 1).padStart(6, '0')}/` })))
+          const entries = req.method === 'HEAD' ? [] : await collectProjectChatZipEntries(project)
+          setProjectZipHeaders(res, toProjectZipFileName(project.label))
+          if (req.method !== 'HEAD') await streamProjectZip('', res, entries, roots)
+          res.end()
+          return
+        }
         if (!rawCwd) {
           setJson(res, 400, { error: 'Missing cwd' })
           return
@@ -9124,6 +9400,10 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
       if (req.method === 'GET' && url.pathname === '/codex-api/project-directories') {
         const root = url.searchParams.get('path') ?? ''
+        if (isVirtualProjectId(root)) {
+          setJson(res, 200, { data: [] })
+          return
+        }
         if (!isAbsolute(root)) {
           setJson(res, 400, { error: '工作目录必须填写绝对路径' })
           return
@@ -9136,13 +9416,33 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'POST' && url.pathname === '/codex-api/project-membership') {
+        const payload = asRecord(await readJsonBody(req))
+        const cwd = typeof payload?.cwd === 'string' ? payload.cwd : ''
+        const projectId = typeof payload?.projectId === 'string' ? payload.projectId : null
+        await getVirtualProjectStore().assign(cwd, projectId)
+        setJson(res, 200, { ok: true })
+        return
+      }
+
+      if (req.method === 'DELETE' && url.pathname === '/codex-api/project-root') {
+        const id = url.searchParams.get('id') ?? ''
+        if (!isVirtualProjectId(id)) { setJson(res, 400, { error: 'Invalid project' }); return }
+        await getVirtualProjectStore().remove(id)
+        await updateWorkspaceRootsState(state => ({ ...state, projectOrder: state.projectOrder.filter(item => item !== id) }))
+        setJson(res, 200, { ok: true })
+        return
+      }
+
       if (req.method === 'POST' && url.pathname === '/codex-api/project-root') {
         const payload = asRecord(await readJsonBody(req))
         const rawPath = typeof payload?.path === 'string' ? payload.path.trim() : ''
         const createIfMissing = payload?.createIfMissing === true
         const label = typeof payload?.label === 'string' ? payload.label : ''
-        if (!rawPath) {
-          setJson(res, 400, { error: 'Missing path' })
+        if (!rawPath || isVirtualProjectId(rawPath)) {
+          const project = await getVirtualProjectStore().save(rawPath || undefined, label)
+          await updateWorkspaceRootsState(state => ({ ...state, projectOrder: prependUniqueString(project.id, state.projectOrder) }))
+          setJson(res, 200, { data: { path: project.id } })
           return
         }
 
@@ -9218,7 +9518,8 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         const payload = asRecord(await readJsonBody(req))
         const prompt = typeof payload?.prompt === 'string' ? payload.prompt : null
         try {
-          const directory = await createProjectlessThreadDirectory(prompt)
+          const projectId = typeof payload?.projectId === 'string' ? payload.projectId : ''
+          const directory = projectId ? await createProjectConversationDirectory(prompt, projectId) : await createProjectlessThreadDirectory(prompt)
           setJson(res, 200, { data: directory })
         } catch (error) {
           setJson(res, 500, { error: error instanceof Error ? error.message : 'Failed to create new chat folder' })
@@ -9391,6 +9692,36 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         setJson(res, 200, { data: await quotaResume.snapshot() })
         return
       }
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-interruptions') {
+        setJson(res, 200, { data: await appServer.interruptions.snapshot() })
+        return
+      }
+      if (url.pathname === '/codex-api/ignored-quota-errors' && ['GET', 'POST'].includes(req.method || '')) {
+        const input = req.method === 'POST' ? asRecord(await readJsonBody(req)) : null
+        const threadId = readNonEmptyString(input?.threadId) || url.searchParams.get('threadId') || ''
+        if (!/^[a-zA-Z0-9-]{1,200}$/.test(threadId) || (req.method === 'POST' && (typeof input?.ignored !== 'boolean' || !/^[a-zA-Z0-9-]{1,200}$/.test(readNonEmptyString(input?.turnId))))) {
+          setJson(res, 400, { error: '忽略标记参数无效' })
+          return
+        }
+        if (req.method === 'POST') {
+          await ignoredQuotaErrors.set(threadId, readNonEmptyString(input?.turnId), input!.ignored as boolean)
+          await appServer.interruptions.publish(threadId)
+          appServer.notifyQuotaErrorIgnored(threadId)
+        }
+        setJson(res, 200, { data: await ignoredQuotaErrors.list(threadId) })
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/codex-api/sidebar-thread-status') {
+        const payload = asRecord(await readJsonBody(req))
+        if (!Array.isArray(payload?.threadIds) || payload.threadIds.length > 100 || payload.threadIds.some(id => typeof id !== 'string' || !id || id.length > 200)) {
+          setJson(res, 400, { error: '每次最多读取 100 个会话状态' })
+          return
+        }
+        const rawVersions = asRecord(payload.versions)
+        const versions = Object.fromEntries((payload.threadIds as string[]).map(id => [id, readNonEmptyString(rawVersions?.[id]).slice(0, 80)]))
+        setJson(res, 200, { data: await sidebarThreadStatus.snapshot(payload.threadIds as string[], versions) })
+        return
+      }
       if (req.method === 'POST' && url.pathname === '/codex-api/thread-goals') {
         const payload = asRecord(await readJsonBody(req))
         if (!Array.isArray(payload?.threadIds) || payload.threadIds.length > 100 || payload.threadIds.some(id => typeof id !== 'string' || !id || id.length > 100)) {
@@ -9529,7 +9860,7 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
           setJson(res, 400, { error: 'projectName, name, prompt, and rrule are required' })
           return
         }
-        if (!isAbsoluteLikePath(projectName)) {
+        if (!isAbsoluteLikePath(projectName) && !isVirtualProjectId(projectName)) {
           setJson(res, 400, { error: 'Project automation cwd must be an absolute path' })
           return
         }

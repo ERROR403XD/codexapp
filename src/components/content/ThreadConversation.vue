@@ -1,6 +1,6 @@
 <template>
   <section class="conversation-root" @contextmenu.capture="onConversationContextMenu">
-    <p v-if="isLoading" class="conversation-loading">Loading messages...</p>
+    <p v-if="isLoading && messages.length === 0" class="conversation-loading">Loading messages...</p>
 
     <p
       v-else-if="messages.length === 0 && pendingRequests.length === 0 && !liveOverlay && !hasMoreAbove"
@@ -607,6 +607,16 @@
                     </button>
                   </template>
                 </div>
+                <button
+                  v-if="isTurnErrorMessage(message) && message.turnId"
+                  type="button"
+                  class="quota-error-ignore"
+                  :aria-pressed="ignoredQuotaTurns.includes(message.turnId)"
+                  :title="t(ignoredQuotaTurns.includes(message.turnId) ? '取消忽略' : '忽略')"
+                  :disabled="quotaIgnorePending"
+                  @click="toggleQuotaError(message.turnId)"
+                >{{ t(ignoredQuotaTurns.includes(message.turnId) ? '已忽略' : '忽略') }}</button>
+                <span v-if="isTurnErrorMessage(message) && quotaIgnoreError" role="alert">{{ t(quotaIgnoreError) }}</span>
                 <a
                   v-if="isTurnErrorMessage(message)"
                   class="turn-error-feedback"
@@ -703,6 +713,9 @@
                 </div>
               </section>
 
+              <p v-if="message.deliveryState" class="conversation-delivery-status" :data-status="message.deliveryState.status" :title="message.deliveryState.error" role="status">
+                {{ t(conversationDeliveryLabel(message.deliveryState.status)) }}
+              </p>
               <div
                 v-if="showCopyResponseButton(message) || showEditMessageButton(message)"
                 class="message-toolbar"
@@ -933,9 +946,11 @@
 </template>
 
 <script setup lang="ts">
+import { conversationDeliveryLabel } from '../../conversationDelivery'
 import { messageRenderKey } from '../../messageIdentity'
 import SubtaskEventCard from './SubtaskEventCard.vue'
 import { formatLocalDateTime } from '../../dateTime'
+import { useIgnoredQuotaErrors } from '../../composables/useIgnoredQuotaErrors'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { UiFileChange, UiLiveOverlay, UiMessage, UiPlanStep, UiServerRequest } from '../../types/codex'
 import { updateThreadFileChanges } from '../../api/codexGateway'
@@ -969,23 +984,17 @@ const fileLinkContextMenuY = ref(0)
 const fileLinkContextBrowseUrl = ref('')
 const fileLinkContextEditUrl = ref('')
 const { isMobile } = useMobile()
-const { buildFeedbackMailto, feedbackMailtoBase, recordVisibleFailure } = useFeedbackDiagnostics()
-const feedbackMailto = feedbackMailtoBase()
+const { openFeedbackReport, feedbackUrl, recordVisibleFailure } = useFeedbackDiagnostics()
+const feedbackMailto = feedbackUrl
 
 function prepareLiveErrorFeedback(event: MouseEvent, message: string): void {
   recordVisibleFailure(message)
-  const target = event.currentTarget
-  if (target instanceof HTMLAnchorElement) {
-    target.href = buildFeedbackMailto()
-  }
+  openFeedbackReport(event)
 }
 
 function prepareTurnErrorFeedback(event: MouseEvent, message: string): void {
   recordVisibleFailure(message)
-  const target = event.currentTarget
-  if (target instanceof HTMLAnchorElement) {
-    target.href = buildFeedbackMailto()
-  }
+  openFeedbackReport(event)
 }
 
 function parsePlanFromMessageText(text: string): { explanation: string; steps: UiPlanStep[] } | null {
@@ -1338,6 +1347,8 @@ const props = defineProps<{
   isLoadingPersistedAbove?: boolean
   loadEarlierMessages?: (threadId: string) => Promise<void>
 }>()
+
+const { ignored: ignoredQuotaTurns, pending: quotaIgnorePending, error: quotaIgnoreError, toggle: toggleQuotaError } = useIgnoredQuotaErrors(computed(() => props.messages.some(message => isTurnErrorMessage(message) && message.turnId) ? props.activeThreadId : ''))
 
 const emit = defineEmits<{
   openTask: [threadId: string]
@@ -2378,7 +2389,7 @@ const editableTurnIdByMessageId = computed<Record<string, string>>(() => {
 })
 
 function showEditMessageButton(message: UiMessage): boolean {
-  return typeof editableTurnIdByMessageId.value[renderKey(message)] === 'string'
+  return !message.deliveryState && typeof editableTurnIdByMessageId.value[renderKey(message)] === 'string'
 }
 
 function editMessage(messageId: string): void {

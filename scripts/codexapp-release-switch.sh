@@ -6,12 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 REPO_DIR="${CODEXAPP_SOURCE_DIR:-$DEFAULT_REPO_DIR}"
-RELEASE_ROOT="${CODEXAPP_RELEASE_ROOT:-/srv/codexapp/releases}"
-STATE_ROOT="${CODEXAPP_SWITCH_STATE_ROOT:-/var/lib/codexapp-switch}"
+RELEASE_ROOT="${CODEXAPP_RELEASE_ROOT:-/home/docker/codexapp-releases}"
+STATE_ROOT="${CODEXAPP_SWITCH_STATE_ROOT:-/home/docker/codexapp-switch-state}"
 SERVICE_NAME="${CODEXAPP_SERVICE_NAME:-codexapp.service}"
 DROPIN_DIR="${CODEXAPP_DROPIN_DIR:-/etc/systemd/system/${SERVICE_NAME}.d}"
 DROPIN_FILE="${CODEXAPP_DROPIN_FILE:-$DROPIN_DIR/90-release-switch.conf}"
-PRODUCTION_HOME="${CODEXAPP_PRODUCTION_HOME:-${HOME}/.codex}"
+PRODUCTION_HOME="${CODEXAPP_PRODUCTION_HOME:-/root/.codex}"
 PRODUCTION_URL="${CODEXAPP_PRODUCTION_URL:-http://127.0.0.1:5900}"
 PRODUCTION_PORT="${CODEXAPP_PRODUCTION_PORT:-5900}"
 TEST_CONTAINER="${CODEXAPP_TEST_CONTAINER:-codexapp-multi-account-dev}"
@@ -25,8 +25,13 @@ DROPIN_SNAPSHOT_READY=0
 TEST_CONTAINER_WAS_RUNNING=0
 SCHEDULER_DRAINED=0
 API_PROXY_DRAINED=0
+ACTIVATION_DRAINED=0
 
 resume_scheduler_on_exit() {
+  if [[ "$ACTIVATION_DRAINED" == "1" ]]; then
+    curl --fail --silent --show-error --max-time 10 -X POST -H 'Content-Type: application/json' \
+      --data '{"draining":false}' "$PRODUCTION_URL/codex-api/api-proxy/activation/drain" >/dev/null || true
+  fi
   if [[ "$API_PROXY_DRAINED" == "1" ]]; then
     curl --silent --show-error --max-time 10 -X POST -H 'Content-Type: application/json' \
       --data '{"draining":false}' "$PRODUCTION_URL/codex-api/api-proxy/drain" >/dev/null || true
@@ -67,6 +72,18 @@ try {
   process.exit(readFileSync(entry, 'utf8').includes('/codex-api/api-proxy') ? 1 : 0)
 } catch { process.exit(1) }
 NODE
+}
+
+drain_activation_for_cutover() {
+  if running_release_has_no_api_proxy; then return 0; fi
+  local status
+  status="$(curl --silent --show-error --max-time 10 -o /dev/null -w '%{http_code}' "$PRODUCTION_URL/codex-api/api-proxy/activation/activity")"
+  if [[ "$status" == "404" ]]; then return 0; fi
+  [[ "$status" == "200" ]] || die "Cannot inspect activation (HTTP $status)."
+  # Set before POST so a lost response is also recovered by the exit trap.
+  ACTIVATION_DRAINED=1
+  curl --fail --silent --show-error --max-time 10 -X POST -H 'Content-Type: application/json' \
+    --data '{"draining":true}' "$PRODUCTION_URL/codex-api/api-proxy/activation/drain" >/dev/null
 }
 
 drain_api_proxy_for_cutover() {
@@ -419,7 +436,10 @@ prepare_release() {
 
   mkdir -p "$release"
   tar -xzf "$pack_path" -C "$release" --strip-components=1
-  npm --prefix "$release" install --omit=dev --no-package-lock
+  # Record the exact deployment tree; recovery of this release can use npm ci
+  # instead of resolving transitive ranges again. Do not upgrade at activation.
+  npm --prefix "$release" install --omit=dev --package-lock
+  [[ -f "$release/package-lock.json" ]] || die "Prepared dependency lock is missing."
 
   if [[ -f "$REPO_DIR/resources/api-proxy/manifest.json" ]]; then
     "$NODE_BIN" "$REPO_DIR/scripts/install-api-proxy.cjs" "$REPO_DIR/output/api-proxy-component"
@@ -476,6 +496,7 @@ activate_release() {
   release="$(validate_release "$requested")"
   check_runtime_boundary
   systemctl is-active --quiet "$SERVICE_NAME" || die "$SERVICE_NAME must be active before cutover."
+  drain_activation_for_cutover
   drain_scheduler_for_cutover
   drain_api_proxy_for_cutover
   check_idle_runtime
@@ -535,6 +556,7 @@ rollback_release() {
   previous_transaction="$(read_first_line "$active_transaction/previous-transaction" || true)"
   check_runtime_boundary
   systemctl is-active --quiet "$SERVICE_NAME" || die "$SERVICE_NAME must be active before rollback."
+  drain_activation_for_cutover
   drain_scheduler_for_cutover
   drain_api_proxy_for_cutover
   check_idle_runtime

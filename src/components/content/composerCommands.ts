@@ -11,7 +11,7 @@ export const APP_COMMANDS: { id: AppCommandName; description: string; requiresTh
   { id: 'tasks', description: '搜索任务，打开或插入近期对话摘录' },
   { id: 'new', description: '在当前项目开始新会话，保留原会话' },
   { id: 'rename', description: '重命名当前会话', requiresThread: true },
-  { id: 'fork', description: '从当前会话创建独立分支', requiresThread: true, idleOnly: true },
+  { id: 'fork', description: '从当前会话创建独立分支', requiresThread: true },
   { id: 'review', description: '让 Codex 审查当前未提交的代码变更', requiresThread: true, idleOnly: true },
   { id: 'diff', description: '打开工作区文件差异与审阅面板', requiresThread: true },
   { id: 'status', description: '查看当前模型、上下文用量与运行状态' },
@@ -29,16 +29,14 @@ export type SlashToken = { start: number; end: number; query: string; text: stri
 export function findSlashToken(text: string, cursor: number, selectionEnd = cursor): SlashToken | null {
   if (cursor !== selectionEnd) return null
   const before = text.slice(0, cursor)
-  const match = /(^|\s)(\/[\p{L}\p{N}_:.-]*)$/u.exec(before)
+  // Only a command at the beginning of the draft opens the picker.
+  const match = /^(\/[\p{L}\p{N}_:.-]*)$/u.exec(before)
   if (!match) return null
-  // Slashes in fenced or inline code remain ordinary text.
-  if ((before.match(/```/gu)?.length ?? 0) % 2) return null
-  const line = before.slice(before.lastIndexOf('\n') + 1)
-  if ((line.replace(/```/gu, '').match(/`/gu)?.length ?? 0) % 2) return null
-  const start = cursor - match[2]!.length
+  const start = 0
   const tail = /^[^\s]*/u.exec(text.slice(cursor))?.[0] ?? ''
   if (!/^[\p{L}\p{N}_:.-]*$/u.test(tail)) return null
-  return { start, end: cursor + tail.length, query: match[2]!.slice(1), text: text.slice(start, cursor + tail.length) }
+  if (cursor + tail.length !== text.length) return null
+  return { start, end: cursor + tail.length, query: match[1]!.slice(1), text: text.slice(start, cursor + tail.length) }
 }
 
 export function buildComposerCommands(

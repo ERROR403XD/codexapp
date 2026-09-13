@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/ERROR403XD/codexapp)](https://github.com/ERROR403XD/codexapp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-CodexApp 是基于 Codex app-server 的自托管 Web 界面，让你在桌面、平板和手机浏览器中管理项目、会话、账号与自动化任务。当前发布基线为 **0.2.17**。这是社区维护的独立项目，与 OpenAI 官方产品没有隶属关系。
+CodexApp 是基于 Codex app-server 的自托管 Web 界面，让你在桌面、平板和手机浏览器中管理项目、会话、账号与自动化任务。当前发布基线为 **0.2.19**。这是社区维护的独立项目，与 OpenAI 官方产品没有隶属关系。
 
 ## 使用边界与政策遵循
 
@@ -57,7 +57,7 @@ CodexApp 是基于 Codex app-server 的自托管 Web 界面，让你在桌面、
 
 插件页刷新按钮加宽并靠右对齐；筛选器按内容宽度显示，搜索框填满剩余空间，控件间距统一。
 
-0.2.17 新增自定义连接管理与可选账号定时激活，改进插件目录加载、通知设置和 WebUI 外观设置；自动化任务支持列表开关，切换后保持当前排序至刷新。正在查看的会话完成时不再产生蓝点，修复图片消息重复显示，未回答的提问固定在输入框上方，自动主题使用显示器图标。定时激活默认关闭，遵守前台优先、忙碌跳过与请求数量限制。
+0.2.19 是 0.2 系列的封版维护基线，包含此前未单独公开发布的 0.2.18 改进：统一时间控件与每天多个运行时刻、仅名称的项目组织、可恢复的引导正文显示、活跃会话暂留和持久红/黄问题点、轻量反馈及输入区修复。自动化的准备、状态保存和长期历史恢复得到局部加固；现有账号、额度、API 出口及阻塞规则保持。PWA 在支持 launch_handler 的浏览器中优先复用已有窗口。详见 [发布说明](docs/RELEASE-0.2.19.md)。
 
 ## 环境要求
 
@@ -72,7 +72,7 @@ CodexApp 是基于 Codex app-server 的自托管 Web 界面，让你在桌面、
 ### 从本仓库源码构建
 
 ```bash
-git clone --branch v0.2.17 https://github.com/ERROR403XD/codexapp.git
+git clone --branch v0.2.19 https://github.com/ERROR403XD/codexapp.git
 cd codexapp
 pnpm install --frozen-lockfile
 pnpm run build
@@ -83,11 +83,11 @@ node dist-cli/index.js --port 5900 --strict-port --no-open
 
 ### 使用本仓库 Release 安装包
 
-从 [v0.2.17](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.17) 下载 `codexapp-0.2.17.tgz` 和 `SHA256SUMS`，在下载目录执行：
+从 [v0.2.19](https://github.com/ERROR403XD/codexapp/releases/tag/v0.2.19) 下载 `codexapp-0.2.19.tgz` 和 `SHA256SUMS`，在下载目录执行：
 
 ```bash
 sha256sum -c SHA256SUMS
-npm install -g ./codexapp-0.2.17.tgz
+npm install -g ./codexapp-0.2.19.tgz
 codexapp --port 5900 --strict-port --no-open
 ```
 
@@ -128,6 +128,8 @@ CODEXAPP_API_PROXY_BINARY="$PWD/output/api-proxy-component/cli-proxy-api" \
 
 升级前结束运行中的任务并备份数据，下载新版本并校验、重新构建或安装后再启动。回退可使用先前源码标签或发行包，同时保留数据备份。源码中的 `scripts/codexapp-release-switch.sh` 是本项目宿主环境的两阶段部署脚本，使用前阅读脚本配置；GitHub Release 发布不等同于自动切换你的运行服务。
 
+0.2.19 使用可恢复的分段自动化历史。回退到更早版本前，先停止对应实例并保留完整备份，再用 **0.2.19 程序**执行 `node dist-cli/index.js automation-history --home /path/to/codex-home --export-legacy`，确认成功后才启动旧程序；不能通过删除调度锁或历史来绕过失败。固定直接运行依赖后，实际部署仍应保留安装生成的 package-lock.json，以便使用 npm ci 复装相同解析结果。
+
 ## 开发与验证
 
 ```bash
@@ -137,9 +139,9 @@ pnpm run build
 pnpm run test:unit
 ```
 
-前端使用 Vue 3 / TypeScript / Vite；Node.js / Express 通过 WebSocket 与 RPC 对接 Codex app-server，终端使用 xterm.js / node-pty。开发入口为 `src/`、`scripts/`，测试索引为 [tests.md](tests.md)，公开验收说明见 [docs/RELEASE-0.2.17.md](docs/RELEASE-0.2.17.md)。
+前端使用 Vue 3 / TypeScript / Vite；Node.js / Express 通过 WebSocket 与 RPC 对接 Codex app-server，终端使用 xterm.js / node-pty。开发入口为 `src/`、`scripts/`，测试索引为 [tests.md](tests.md)，公开验收说明见 [docs/RELEASE-0.2.19.md](docs/RELEASE-0.2.19.md)。
 
-发布验证范围与限制见 [0.2.17 发布说明](docs/RELEASE-0.2.17.md)。私人环境的会话、路径、截图及验收原始记录不随仓库分发。
+发布验证范围与限制见 [0.2.19 发布说明](docs/RELEASE-0.2.19.md)。私人环境的会话、路径、截图及验收原始记录不随仓库分发。
 
 ## 常见问题
 

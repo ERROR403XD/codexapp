@@ -21,7 +21,7 @@
       </div>
     </div>
 
-    <p v-if="runtime" class="automation-runtime-status" :class="{ 'has-error': !runtime.ready }">{{ t('调度器：') }}{{ t(runtime.error || (runtime.draining ? '正在交接，停止领取新任务' : runtime.ready ? '运行中' : '初始化中')) }}</p>
+    <p v-if="runtime && (runtime.error || runtime.draining || !runtime.ready)" class="automation-runtime-status" :class="{ 'has-error': !runtime.ready }">{{ t('调度器：') }}{{ t(runtime.error || (runtime.draining ? '正在交接，停止领取新任务' : runtime.ready ? '运行中' : '初始化中')) }}</p>
     <p v-for="problem in runtime?.definitions.filter(row => row.error) ?? []" :key="problem.id" class="automations-error">{{ problem.id }}：{{ t(problem.error || '') }}</p>
     <p v-if="loadError" class="automations-error">{{ t(loadError) }}</p>
 
@@ -98,7 +98,7 @@
           </div>
           <div>
             <dt>{{ t('Target') }}</dt>
-            <dd :title="selectedRow.targetTitle">{{ selectedRow.targetLabel }}</dd>
+            <dd :title="isVirtualProjectId(selectedRow.targetTitle) ? selectedRow.targetLabel : selectedRow.targetTitle">{{ selectedRow.targetLabel }}</dd>
           </div>
           <div>
             <dt>ID</dt>
@@ -117,6 +117,9 @@
 </template>
 
 <script setup lang="ts">
+import { isVirtualProjectId } from '../../projectOrganization'
+import { notifyOperation } from '../../composables/useOperationToast'
+import { readDailyTimesRule } from '../../automationDailyTimes'
 import { formatLocalDateTime } from '../../dateTime'
 import AppButton from '../common/AppButton.vue'
 import AppSwitch from '../common/AppSwitch.vue'
@@ -208,7 +211,7 @@ const automationRows = computed<AutomationRow[]>(() => {
     }
   }
   for (const [cwd, automations] of Object.entries(projectAutomations.value)) {
-    const projectLabel = projectLabelByCwd.value.get(cwd) ?? getPathLeaf(cwd)
+    const projectLabel = projectLabelByCwd.value.get(cwd) ?? (isVirtualProjectId(cwd) ? '—' : getPathLeaf(cwd))
     for (const automation of automations) {
       rows.push({
         rowKey: getAutomationRowKey('project', cwd, automation.id),
@@ -316,12 +319,13 @@ async function mutateAutomation(action: () => Promise<unknown>): Promise<void> {
   loadError.value = ''
   try {
     await action()
+    notifyOperation('自动化已更新', 'success')
     await loadAutomations()
     if (!loadError.value) {
       emit('automations-updated', { thread: threadAutomations.value, project: projectAutomations.value })
     }
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : 'Failed to save automation'
+    notifyOperation(error instanceof Error ? error.message : 'Failed to save automation')
   } finally {
     isMutating.value = false
   }
@@ -386,6 +390,8 @@ function describeAutomationSchedule(automation: UiThreadAutomation): string {
   if (automation.status === 'PAUSED') return t('Paused')
   if (automation.nextRunAtMs) return `下次 ${formatLocalDateTime(automation.nextRunAtMs)}`
   const rrule = automation.rrule.trim()
+  const dailyTimes = readDailyTimesRule(rrule)
+  if (dailyTimes) return `${t('Daily')} ${dailyTimes.join('、')}`
   if (/FREQ=MINUTELY/i.test(rrule)) {
     const interval = /INTERVAL=(\d+)/i.exec(rrule)?.[1] ?? '1'
     return interval === '1' ? t('Every minute') : t('Every {count} minutes', { count: interval })

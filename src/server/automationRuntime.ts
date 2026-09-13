@@ -1,11 +1,18 @@
 import type { AutomationRuntime, AutomationInspection } from './automationEngine.js'
 import type { AutomationRun } from './automationStore.js'
+import { stat } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
+import { isVirtualProjectId } from '../projectOrganization.js'
+import type { AutomationPreparation } from './automationPreparation.js'
 
-type Rpc = (method: string, params: unknown, runId?: string) => Promise<unknown>
+type Rpc = (method: string, params: unknown, runId?: string, scope?: AutomationPreparation) => Promise<unknown>
 const record = (value: unknown) => value && typeof value === 'object' ? value as Record<string, unknown> : {}
 
 export function createAutomationRuntime(options: {
   rpc: Rpc
+  beginPreparation?: AutomationRuntime['beginPreparation']
+  endPreparation?: AutomationRuntime['endPreparation']
+  resolveCwd?: (cwd: string, name: string) => Promise<string>
   acquireAccount?: AutomationRuntime['acquireAccount']
   releaseAccount?: AutomationRuntime['releaseAccount']
   accountStorageId?: AutomationRuntime['accountStorageId']
@@ -17,19 +24,27 @@ export function createAutomationRuntime(options: {
 }): AutomationRuntime {
   const rpc = options.rpc
   return {
+    beginPreparation: options.beginPreparation,
+    endPreparation: options.endPreparation,
     acquireAccount: options.acquireAccount,
     releaseAccount: options.releaseAccount,
     accountStorageId: options.accountStorageId,
     accountBusy: options.accountBusy,
-    async canStart(threadId) {
+    async canStart(threadId, scope) {
       if (await options.hasQueuedMessages(threadId)) return false
-      const result = record(await rpc('thread/read', { threadId, includeTurns: false }))
+      scope?.assertActive()
+      const result = record(await rpc('thread/read', { threadId, includeTurns: false }, undefined, scope))
       const thread = record(result.thread)
       const status = record(thread.status).type ?? thread.status
       return !['active', 'running', 'inProgress'].includes(String(status))
         && !options.pendingRequests().some((request) => record(record(request).params).threadId === threadId)
     },
     async createThread(cwd, name, settings = {}, runId) {
+      if (isVirtualProjectId(cwd)) {
+        if (!options.resolveCwd) throw new Error('Project not found')
+        cwd = await options.resolveCwd(cwd, name)
+        if (!isAbsolute(cwd) || !(await stat(cwd)).isDirectory()) throw new Error('cwd 不是目录')
+      }
       const response = record(await rpc('thread/start', { cwd, ...(settings.model ? { model: settings.model } : {}) }, runId))
       const thread = record(response.thread)
       if (typeof thread.id !== 'string') throw new Error('未返回 threadId')

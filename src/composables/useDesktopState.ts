@@ -1,8 +1,12 @@
+import { isVirtualProjectId, organizeProjectGroups } from '../projectOrganization'
+import { removeVirtualProject } from '../api/codexGateway'
+import { notifyOperation } from './useOperationToast'
 import { mergeQuotaUpdate } from '../quotaRefresh'
 import { effectiveConversationChoice, useWebConversationPreferences, type ConversationChoice } from '../webConversationPreferences'
 import { historyMessageKey, combineHistoryAndLive, sameMessageIdentity } from '../messageIdentity'
 import { mergeSubtaskMessage, observeTaskNotification } from '../subtasks'
 import { createDeliveryId } from '../delivery'
+import { useConversationDeliveries } from './useConversationDeliveries'
 import { changesThreadSearch } from '../threadSearchEvents'
 import { bindMessageTurnOrder, mergeTurnOrder, orderedTurnIds } from '../historyOrder'
 import { authRecoveryFromNotification, type AuthRecoveryState } from '../authRecovery'
@@ -25,6 +29,7 @@ import {
   renameThread,
   getAvailableModels,
   invalidateModelCatalog,
+  invalidateThreadResumeCache,
   getCurrentModelConfig,
   getPendingServerRequests,
   getSkillsList,
@@ -38,6 +43,7 @@ import {
   rollbackThread,
   getThreadGroupsPage,
   getThreadQueueState,
+  getDeliveryStatuses,
   getWorkspaceRootsState,
   mutateThreadQueueState,
   setWorkspaceRootsState,
@@ -1009,10 +1015,11 @@ function mergeIncomingWithLocalInProgressThreads(
   previous: UiProjectGroup[],
   incoming: UiProjectGroup[],
   inProgressById: Record<string, boolean>,
+  pendingThreadIds: ReadonlySet<string> = new Set(),
 ): UiProjectGroup[] {
   const incomingThreadIds = new Set(flattenThreads(incoming).map((thread) => thread.id))
   const localInProgressThreads = flattenThreads(previous).filter(
-    (thread) => inProgressById[thread.id] === true && !incomingThreadIds.has(thread.id),
+    (thread) => (inProgressById[thread.id] === true || pendingThreadIds.has(thread.id)) && !incomingThreadIds.has(thread.id),
   )
 
   if (localInProgressThreads.length === 0) {
@@ -1071,11 +1078,14 @@ function getRemoteProjectById(rootsState: WorkspaceRootsState | null): Map<strin
 
 function getWorkspaceProjectOrderPaths(rootsState: WorkspaceRootsState | null): string[] {
   if (!rootsState) return []
-  const savedRoots = new Set(rootsState.order)
+  const savedRoots = new Set([...rootsState.order, ...(rootsState.virtualProjects ?? []).map(project => project.id)])
   const remoteProjectIds = new Set((rootsState.remoteProjects ?? []).map((project) => project.id))
   const orderedRoots = rootsState.projectOrder.filter((item) => savedRoots.has(item) || remoteProjectIds.has(item))
   for (const rootPath of rootsState.order) {
     if (!orderedRoots.includes(rootPath)) orderedRoots.push(rootPath)
+  }
+  for (const project of rootsState.virtualProjects ?? []) {
+    if (!orderedRoots.includes(project.id)) orderedRoots.push(project.id)
   }
   for (const remoteProjectId of remoteProjectIds) {
     if (!orderedRoots.includes(remoteProjectId)) orderedRoots.push(remoteProjectId)
@@ -1089,7 +1099,7 @@ function getWorkspaceProjectOrderNames(
 ): string[] {
   const remoteProjectsById = getRemoteProjectById(rootsState)
   return getWorkspaceProjectOrderPaths(rootsState).map((rootPath) => {
-    if (remoteProjectsById.has(rootPath)) return rootPath
+    if (remoteProjectsById.has(rootPath) || isVirtualProjectId(rootPath)) return rootPath
     const normalizedRootPath = normalizePathForUi(rootPath).trim()
     const leafName = toProjectNameFromWorkspaceRoot(normalizedRootPath)
     return duplicateLeafNames.has(leafName) ? normalizedRootPath : leafName
@@ -1151,7 +1161,7 @@ export function buildWorkspaceRootsProjectOrderState(
   }
 
   for (const projectName of orderedProjectNames) {
-    if (remoteProjectIds.has(projectName)) {
+    if (remoteProjectIds.has(projectName) || isVirtualProjectId(projectName)) {
       pushProjectOrderItem(projectName)
       continue
     }
@@ -1311,6 +1321,7 @@ function addWorkspaceRootPlaceholderGroups(
   const remoteProjectsById = getRemoteProjectById(rootsState)
 
   for (const rootPath of getWorkspaceProjectOrderPaths(rootsState)) {
+    if (isVirtualProjectId(rootPath)) continue
     if (remoteProjectsById.has(rootPath)) {
       if (existingProjectNames.has(rootPath)) continue
       nextGroups.push({ projectName: rootPath, threads: [] })
@@ -1345,7 +1356,7 @@ function toForkedThreadTitle(title: string): string {
 }
 
 function isProjectlessGroup(group: UiProjectGroup): boolean {
-  return group.threads.some((thread) => thread.cwd.trim().length === 0 || isProjectlessChatPath(thread.cwd))
+  return !isVirtualProjectId(group.projectName) && group.threads.some((thread) => thread.cwd.trim().length === 0 || isProjectlessChatPath(thread.cwd))
 }
 
 export function filterGroupsByWorkspaceRoots(
@@ -1354,7 +1365,7 @@ export function filterGroupsByWorkspaceRoots(
 ): UiProjectGroup[] {
   const duplicateLeafNames = collectDuplicateProjectLeafNames(groups, rootsState)
   const disambiguatedGroups = disambiguateProjectGroupsByCwd(groups, rootsState)
-  const groupsWithWorkspaceRoots = addWorkspaceRootPlaceholderGroups(disambiguatedGroups, rootsState, duplicateLeafNames)
+  const groupsWithWorkspaceRoots = organizeProjectGroups(addWorkspaceRootPlaceholderGroups(disambiguatedGroups, rootsState, duplicateLeafNames), rootsState?.virtualProjects ?? [])
   if (!rootsState || (rootsState.order.length === 0 && (rootsState.remoteProjects ?? []).length === 0)) return groupsWithWorkspaceRoots
   const allowedProjectNames = new Set<string>()
   for (const projectName of getWorkspaceProjectOrderNames(rootsState, duplicateLeafNames)) {
@@ -1365,6 +1376,7 @@ export function filterGroupsByWorkspaceRoots(
 }
 
 export function useDesktopState(options: { isThreadVisible?: (threadId: string) => boolean } = {}) {
+  const conversationDeliveries = useConversationDeliveries()
   const webPreferences = useWebConversationPreferences(typeof window !== 'undefined' ? window.localStorage : undefined)
   const webPreferenceState = webPreferences.state
   const webPreferenceError = webPreferences.error
@@ -1587,6 +1599,8 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
   let rateLimitRefreshTimer: number | null = null
   const delayedTurnSyncTimerByThreadId = new Map<string, number>()
   let loadThreadsPromise: Promise<void> | null = null
+  let accountIdentityRevision = 0
+  const loadIdentityRevisionByThreadId = new Map<string, number>()
   const loadMessagePromiseByThreadId = new Map<string, Promise<void>>()
   let refreshSkillsPromise: Promise<void> | null = null
   let lastThreadListLoadAt = 0
@@ -1624,7 +1638,8 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     const snapshot = snapshotThreads.value[threadId]
     const thread = listed ?? snapshot
     if (!thread) return null
-    return { ...thread, title: threadTitleById.value[threadId] || thread.title, task: snapshot?.task ?? thread.task }
+    const organization = loadedThreadListRootsState?.virtualProjects?.find(project => project.cwds.includes(thread.cwd))
+    return { ...thread, projectName: organization?.id ?? thread.projectName, title: threadTitleById.value[threadId] || thread.title, task: snapshot?.task ?? thread.task }
   })
   const selectedThreadTerminalOpen = computed(() => {
     const threadId = selectedThreadId.value
@@ -1697,8 +1712,8 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     const combined = combineHistoryAndLive(persisted, [...livePlan, ...liveCommands, ...liveFileChanges, ...liveAgent])
 
     const summary = turnSummaryByThreadId.value[threadId]
-    if (!summary) return combined
-    return insertTurnSummaryMessage(combined, summary)
+    const history = summary ? insertTurnSummaryMessage(combined, summary) : combined
+    return conversationDeliveries.project(threadId, history)
   })
   const hasMoreOlderMessages = computed(() => {
     const threadId = selectedThreadId.value
@@ -1730,7 +1745,11 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
         : ''
       if (providerModelId) return providerModelId
     }
-    return readSelectedModel(selectedModelIdByContext.value, threadId).trim()
+    const preferred = readSelectedModel(selectedModelIdByContext.value, threadId).trim()
+    if (threadId && selectedModelIdByContext.value[threadId] && availableModels.value.length) {
+      return effectiveConversationChoice({ model: preferred, provider: readProviderIdForThread(threadId), effort: '', tier: '' }, availableModels.value).model
+    }
+    return preferred
   }
 
   function readProviderIdForThread(threadId: string): string {
@@ -2021,6 +2040,12 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
         selectedModelId.value = effectiveConversationChoice(webSession, models).model
         return
       }
+      const rememberedModel = selectedModelIdByContext.value[selectedThreadId.value]
+      if (selectedThreadId.value && rememberedModel && targetProviderId === 'codex') {
+        // Catalog fallback is effective state, never a new user preference.
+        selectedModelId.value = effectiveConversationChoice({ model: rememberedModel, provider: targetProviderId, effort: '', tier: '' }, models).model
+        return
+      }
       const currentModelInNewList = normalizedSelectedModelId && modelIds.includes(normalizedSelectedModelId)
       if (!normalizedSelectedModelId || !currentModelInNewList || options?.providerChanged) {
         if (options?.providerChanged && nextModelIds.length > 0) {
@@ -2064,7 +2089,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       } else {
         codexCliMissingError.value = ''
       }
-      if (generation === modelRefreshGeneration) modelCatalogError.value = '模型目录暂时不可用，保留当前选择；能力尚未确认。'
+      if (generation === modelRefreshGeneration) modelCatalogError.value = '模型目录暂时不可用'
       if (!options?.retry && generation === modelRefreshGeneration) {
         modelRetryTimer = setTimeout(() => {
           modelRetryTimer = null
@@ -2194,7 +2219,11 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     projectGroups.value = mergeThreadGroups(projectGroups.value, flaggedGroups)
   }
 
+  const pendingListedThreadIds = new Set<string>()
+
   function insertOptimisticThread(threadId: string, cwd: string, firstMessageText: string): void {
+    pendingListedThreadIds.add(threadId)
+    if (pendingListedThreadIds.size > 256) pendingListedThreadIds.delete(pendingListedThreadIds.values().next().value!)
     const nowIso = new Date().toISOString()
     const normalizedCwd = normalizePathForUi(cwd)
     const projectName = toProjectName(normalizedCwd)
@@ -2528,6 +2557,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
   }
 
   function setPersistedMessagesForThread(threadId: string, nextMessages: UiMessage[]): void {
+    conversationDeliveries.observe(threadId, nextMessages)
     const failedCompactionTurns = new Set(nextMessages.filter(message => message.compaction?.status === 'failed' && message.id === `${message.turnId}-compaction`).map(message => message.turnId))
     if (failedCompactionTurns.size) nextMessages = nextMessages.filter(message => !failedCompactionTurns.has(message.turnId)
       || (message.messageType !== 'turnError' && (message.compaction?.status !== 'failed' || message.id === `${message.turnId}-compaction`)))
@@ -4177,26 +4207,10 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     }
   }
 
-  function filterGroupsByWorkspaceRoots(
-    groups: UiProjectGroup[],
-    rootsState: WorkspaceRootsState | null,
-  ): UiProjectGroup[] {
-    const duplicateLeafNames = collectDuplicateProjectLeafNames(groups, rootsState)
-    const disambiguatedGroups = disambiguateProjectGroupsByCwd(groups, rootsState)
-    const groupsWithWorkspaceRoots = addWorkspaceRootPlaceholderGroups(disambiguatedGroups, rootsState, duplicateLeafNames)
-    if (!rootsState || (rootsState.order.length === 0 && (rootsState.remoteProjects ?? []).length === 0)) return groupsWithWorkspaceRoots
-    const allowedProjectNames = new Set<string>()
-    for (const projectName of getWorkspaceProjectOrderNames(rootsState, duplicateLeafNames)) {
-      allowedProjectNames.add(projectName)
-    }
-    const filteredGroups = groupsWithWorkspaceRoots.filter((group) => {
-      if (allowedProjectNames.has(group.projectName)) return true
-      return isProjectlessGroup(group)
-    })
-    return orderGroupsByWorkspaceProjectOrder(filteredGroups, rootsState, duplicateLeafNames)
-  }
-
   function applyThreadGroups(groups: UiProjectGroup[], rootsState: WorkspaceRootsState | null): void {
+    for (const project of rootsState?.virtualProjects ?? []) {
+      projectDisplayNameById.value[project.id] = project.label
+    }
     const visibleGroups = filterGroupsByWorkspaceRoots(groups, rootsState)
     const hasWorkspaceRootsState = Boolean(
       rootsState && (rootsState.order.length > 0 || rootsState.projectOrder.length > 0 || (rootsState.remoteProjects ?? []).length > 0),
@@ -4216,11 +4230,14 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     }
 
     const orderedGroups = orderGroupsByProjectOrder(visibleGroups, projectOrder.value)
-    markServerListedThreads(new Set(flattenThreads(orderedGroups).map((thread) => thread.id)))
+    const listedIds = new Set(flattenThreads(orderedGroups).map(thread => thread.id))
+    for (const id of listedIds) pendingListedThreadIds.delete(id)
+    markServerListedThreads(listedIds)
     const mergedWithInProgress = mergeIncomingWithLocalInProgressThreads(
       sourceGroups.value,
       orderedGroups,
       inProgressById.value,
+      pendingListedThreadIds,
     )
     sourceGroups.value = mergeThreadGroups(sourceGroups.value, mergedWithInProgress)
     inProgressById.value = pruneThreadStateMap(
@@ -4232,6 +4249,31 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
 
   let queueMutationChain: Promise<unknown> = Promise.resolve()
   let queueRequestGeneration = 0
+  const deliveryReceiptReads = new Map<string, Promise<void>>()
+
+  function refreshVisibleDeliveryReceipts(threadId = selectedThreadId.value): Promise<void> {
+    if (!threadId) return Promise.resolve()
+    const pending = deliveryReceiptReads.get(threadId)
+    if (pending) return pending
+    const queuedIds = new Set((queuedMessagesByThreadId.value[threadId] ?? []).map(row => row.id))
+    const ids = conversationDeliveries.rows.value.filter(row => row.threadId === threadId
+      && !['accepted', 'cancelled', 'submitting'].includes(row.status) && !queuedIds.has(row.id)
+      && /^[a-zA-Z0-9_-]{1,160}$/.test(row.id)).map(row => row.id).slice(0, 100)
+    if (!ids.length) return Promise.resolve()
+    const request = (async () => {
+      try {
+        const receipts = await getDeliveryStatuses(threadId, ids)
+        for (const receipt of receipts) conversationDeliveries.patch(receipt.id, receipt)
+        if (receipts.some(receipt => receipt.status === 'accepted')) {
+          conversationDeliveries.observe(threadId, persistedMessagesByThreadId.value[threadId] ?? [])
+          markThreadHistoryDirty(threadId)
+          scheduleDelayedTurnSync(threadId)
+        }
+      } catch { /* A failed read is not proof of cancellation or delivery. Keep the content visible. */ }
+    })().finally(() => deliveryReceiptReads.delete(threadId))
+    deliveryReceiptReads.set(threadId, request)
+    return request
+  }
 
   function commitQueueOperation(operation: ThreadQueueOperation): Promise<ThreadQueueResult> {
     queueRequestGeneration += 1
@@ -4239,11 +4281,15 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       try {
         const result = await mutateThreadQueueState(operation)
         queuedMessagesByThreadId.value = result.state
+        conversationDeliveries.syncQueue(result.state)
+        if (result.removed) conversationDeliveries.patch(result.removed.id, { status: 'cancelled' })
+        void refreshVisibleDeliveryReceipts(operation.threadId)
         queueErrorByThreadId.value = omitKey(queueErrorByThreadId.value, operation.threadId)
         return result
       } catch (cause) {
         error.value = cause instanceof Error ? cause.message : '队列保存失败，请重试'
         queueErrorByThreadId.value = { ...queueErrorByThreadId.value, [operation.threadId]: error.value }
+        if (selectedThreadId.value === operation.threadId) notifyOperation(error.value, 'error', operation.threadId)
         throw cause
       }
     })
@@ -4258,6 +4304,8 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       const state = await getThreadQueueState()
       if (generation === queueRequestGeneration) {
         queuedMessagesByThreadId.value = state
+        conversationDeliveries.syncQueue(state)
+        void refreshVisibleDeliveryReceipts()
         queueStateError.value = ''
       }
     } catch (cause) {
@@ -4277,6 +4325,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
   }
 
   function removeArchivedThreadFromLoadedLists(threadId: string): void {
+    pendingListedThreadIds.delete(threadId)
     loadedThreadListGroups = removeThreadFromGroups(loadedThreadListGroups, threadId)
     sourceGroups.value = removeThreadFromGroups(sourceGroups.value, threadId)
     inProgressById.value = omitKey(inProgressById.value, threadId)
@@ -4426,19 +4475,23 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     await loadThreadsPromise
   }
 
-  async function loadMessages(threadId: string, options: { silent?: boolean } = {}) {
+  async function loadMessages(threadId: string, options: { silent?: boolean; retry?: boolean } = {}) {
     if (!threadId) {
       return
     }
+    conversationDeliveries.refresh()
+    void refreshVisibleDeliveryReceipts(threadId)
     const recentLoadFailure =
       Date.now() - (lastMessageLoadFailureAtByThreadId.get(threadId) ?? 0) < RECENT_THREAD_MESSAGE_LOAD_REUSE_MS
-    if (turnErrorByThreadId.value[threadId]?.transient && (options.silent === true || recentLoadFailure)) {
+    if (!options.retry && turnErrorByThreadId.value[threadId]?.transient && (options.silent === true || recentLoadFailure)) {
       return
     }
 
     const existingLoad = loadMessagePromiseByThreadId.get(threadId)
     if (existingLoad) {
-      await existingLoad
+      const identity = loadIdentityRevisionByThreadId.get(threadId)
+      try { await existingLoad } catch (cause) { if (identity === accountIdentityRevision) throw cause }
+      if (identity !== accountIdentityRevision) await loadMessages(threadId, options)
       return
     }
 
@@ -4448,6 +4501,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       isLoadingMessages.value = true
     }
 
+    const identityRevision = accountIdentityRevision
     const requestedRevision = messageHistoryRevisionByThreadId.get(threadId) ?? 0
     let loadedSnapshot = false
     const loadPromise = (async () => {
@@ -4457,7 +4511,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       const loadedRecently =
         Date.now() - (lastMessageLoadAtByThreadId.get(threadId) ?? 0) < RECENT_THREAD_MESSAGE_LOAD_REUSE_MS
       const canReuseLoadedMessages =
-        alreadyLoaded &&
+        alreadyLoaded && !turnErrorByThreadId.value[threadId]?.transient &&
         requestedRevision === (loadedHistoryRevisionByThreadId.get(threadId) ?? 0) &&
         (
           loadedRecently ||
@@ -4473,7 +4527,15 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
 
       const needsResume = resumedThreadById.value[threadId] !== true
       const resumedThread = needsResume ? await resumeThread(threadId) : null
-      const detail = resumedThread ?? await getThreadDetail(threadId)
+      let detail = resumedThread
+      if (!detail) {
+        try { detail = await getThreadDetail(threadId) } catch (cause) {
+          if (!/thread.*(?:not loaded|not found)|no.*thread.*found/i.test(String(cause))) throw cause
+          invalidateThreadResumeCache(threadId)
+          detail = await resumeThread(threadId)
+        }
+      }
+      if (identityRevision !== accountIdentityRevision) return
       if (detail.thread) snapshotThreads.value = { ...snapshotThreads.value, [threadId]: detail.thread }
 
       if (detail.modelProvider) {
@@ -4546,6 +4608,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
         clearCompletedTurnLiveState(threadId)
       }
       } catch (unknownError) {
+        if (identityRevision !== accountIdentityRevision) return
         const message = unknownError instanceof Error ? unknownError.message : 'Unknown application error'
         if (selectedThreadId.value === threadId) {
           setTurnErrorForThread(threadId, message, { transient: true })
@@ -4559,6 +4622,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       }
     })().finally(() => {
       loadMessagePromiseByThreadId.delete(threadId)
+      loadIdentityRevisionByThreadId.delete(threadId)
       if (loadedSnapshot && requestedRevision !== (messageHistoryRevisionByThreadId.get(threadId) ?? 0)
         && selectedThreadId.value === threadId && typeof window !== 'undefined') {
         pendingThreadMessageRefresh.add(threadId)
@@ -4569,6 +4633,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       }
     })
 
+    loadIdentityRevisionByThreadId.set(threadId, identityRevision)
     loadMessagePromiseByThreadId.set(threadId, loadPromise)
     await loadPromise
   }
@@ -4684,10 +4749,27 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
   }
 
   async function refreshAll(
-    options: { includeSelectedThreadMessages?: boolean; awaitAncillaryRefreshes?: boolean; providerChanged?: boolean; forceThreadRefresh?: boolean } = {},
+    options: { includeSelectedThreadMessages?: boolean; awaitAncillaryRefreshes?: boolean; providerChanged?: boolean; forceThreadRefresh?: boolean; accountChanged?: boolean } = {},
   ) {
     error.value = ''
     codexCliMissingError.value = ''
+    if (options.accountChanged) {
+      accountIdentityRevision++
+      modelRefreshGeneration++
+      invalidateThreadResumeCache()
+      invalidateModelCatalog()
+      recentRateLimitsAt = 0
+      const ids = new Set([...Object.keys(loadedMessagesByThreadId.value), ...Object.keys(turnErrorByThreadId.value), ...loadMessagePromiseByThreadId.keys(), selectedThreadId.value])
+      const resumed = { ...resumedThreadById.value }
+      for (const id of ids) {
+        if (!id || inProgressById.value[id]) continue
+        delete resumed[id]
+        loadedHistoryRevisionByThreadId.set(id, -1)
+        lastMessageLoadFailureAtByThreadId.delete(id)
+        clearTransientTurnErrorForThread(id)
+      }
+      resumedThreadById.value = resumed
+    }
     if (options.providerChanged) { invalidateModelCatalog(); recentRateLimitsAt = 0 }
     const includeSelectedThreadMessages = options.includeSelectedThreadMessages !== false
     const awaitAncillaryRefreshes = options.awaitAncillaryRefreshes === true
@@ -4727,7 +4809,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     setSelectedThreadId(threadId)
 
     try {
-      await loadMessages(threadId)
+      await loadMessages(threadId, { retry: true })
       await refreshModelPreferences({ includeProviderModels: true })
       void refreshSkills()
       return 'ok'
@@ -4817,10 +4899,6 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
 
   async function forkThreadFromTurn(threadId: string, turnId: string): Promise<string> {
     if (!threadId.trim() || !turnId.trim()) return ''
-    if (inProgressById.value[threadId] === true) {
-      error.value = '请等待当前回合结束后再创建分支。'
-      return ''
-    }
     const sourceMessages = persistedMessagesByThreadId.value[threadId] ?? []
     if (!sourceMessages.some(message => message.turnId === turnId)) return ''
     const sourceThread = flattenThreads(sourceGroups.value).find(row => row.id === threadId)
@@ -5090,6 +5168,14 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
         normalizedImageUrls.push(latestAttachedImageUrl)
       }
     }
+    let deliveryId = deliveryOptions?.id || createDeliveryId()
+    const isSteering = deliveryMode === 'steer'
+    const previousTurnId = activeTurnIdByThreadId.value[threadId]
+    const userMessageOrdinal = (persistedMessagesByThreadId.value[threadId] ?? []).filter(message => message.role === 'user' && message.turnId === previousTurnId).length
+      + conversationDeliveries.rows.value.filter(row => row.threadId === threadId && row.status === 'accepted' && row.turnId === previousTurnId).length
+    if (isSteering) conversationDeliveries.begin(threadId, {
+      id: deliveryId, text: nextText, imageUrls: normalizedImageUrls, skills, fileAttachments, collaborationMode,
+    }, userMessageOrdinal, false, previousTurnId)
     try {
       if (resumedThreadById.value[threadId] !== true) {
         const resumedThread = await resumeThread(threadId)
@@ -5104,14 +5190,24 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
           [threadId]: true,
         }
       }
-      const deliveryId = deliveryOptions?.id || createDeliveryId()
-      const previousTurnId = activeTurnIdByThreadId.value[threadId]
-      const userMessageOrdinal = (persistedMessagesByThreadId.value[threadId] ?? []).filter(message => message.role === 'user' && message.turnId === previousTurnId).length
       const startedTurnId = await startThreadTurn(
         threadId, nextText, normalizedImageUrls, executionSettings.model || undefined,
         reasoningEffort || undefined, skills.length > 0 ? skills : undefined,
         fileAttachments, collaborationMode, executionSettings.serviceTier,
-        deliveryMode || 'immediate', { id: deliveryId, requireConfirmed: deliveryOptions?.requireConfirmed },
+        deliveryMode || 'immediate', { id: deliveryId, requireConfirmed: deliveryOptions?.requireConfirmed,
+          onPrepared: id => {
+            if (!isSteering) return
+            conversationDeliveries.replaceId(deliveryId, id)
+            deliveryId = id
+            conversationDeliveries.refresh()
+          },
+          onResult: result => {
+            if (!isSteering) return
+            conversationDeliveries.replaceId(deliveryId, result.id)
+            deliveryId = result.id
+            conversationDeliveries.refresh()
+          },
+        },
       )
       if (!startedTurnId) {
         // A queued steer must not clear the already running turn.
@@ -5128,7 +5224,12 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
         setThreadInProgress(threadId, true)
         const previous = persistedMessagesByThreadId.value[threadId] ?? []
         setPersistedMessagesForThread(threadId, previous.filter(message => !(isOptimisticUserMessage(message) && !message.turnId && message.text === readQuestionReply(nextText).text)))
-        appendOptimisticUserMessage(threadId, nextText, normalizedImageUrls, skills, fileAttachments, { id: deliveryId, turnId: startedTurnId, userMessageOrdinal: startedTurnId === previousTurnId ? userMessageOrdinal : 0 })
+        if (isSteering) {
+          conversationDeliveries.patch(deliveryId, { status: 'accepted', turnId: startedTurnId, userMessageOrdinal: startedTurnId === previousTurnId ? userMessageOrdinal : 0 })
+          conversationDeliveries.observe(threadId, previous)
+        } else {
+          appendOptimisticUserMessage(threadId, nextText, normalizedImageUrls, skills, fileAttachments, { id: deliveryId, turnId: startedTurnId, userMessageOrdinal: startedTurnId === previousTurnId ? userMessageOrdinal : 0 })
+        }
         activeTurnIdByThreadId.value = {
           ...activeTurnIdByThreadId.value,
           [threadId]: startedTurnId,
@@ -5141,6 +5242,14 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
       await syncFromNotifications().catch(() => {})
       scheduleDelayedTurnSync(threadId)
     } catch (unknownError) {
+      if (isSteering) {
+        conversationDeliveries.refresh()
+        // A saved outbox/queue record keeps its real uncertain status. Only a
+        // preflight failure, before any durable submission, is known not sent.
+        const row = conversationDeliveries.rows.value.find(row => row.id === deliveryId)
+        if (row?.status === 'submitting') conversationDeliveries.patch(deliveryId, { status: 'failed', error: String(unknownError) })
+        void refreshQueueState().catch(() => {})
+      }
       throw unknownError
     }
   }
@@ -5313,6 +5422,13 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
 
   async function removeProject(projectName: string): Promise<void> {
     if (projectName.length === 0) return
+    if (isVirtualProjectId(projectName)) {
+      await removeVirtualProject(projectName)
+      projectOrder.value = projectOrder.value.filter(id => id !== projectName)
+      saveProjectOrder(projectOrder.value)
+      await loadThreads({ force: true })
+      return
+    }
 
     const nextProjectOrder = projectOrder.value.filter((name) => name !== projectName)
     if (!areStringArraysEqual(projectOrder.value, nextProjectOrder)) {
@@ -5525,6 +5641,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     restoreCompactionRequests()
 
     if (stopNotificationStream) return
+    conversationDeliveries.start()
     void loadPendingServerRequestsFromBridge()
     let notificationReady = false
     stopNotificationStream = subscribeCodexNotifications((notification) => {
@@ -5622,6 +5739,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
   }
 
   function stopPolling(): void {
+    if (typeof window !== 'undefined') conversationDeliveries.stop()
     if (modelRetryTimer) clearTimeout(modelRetryTimer)
     modelRetryTimer = null
     pendingSnapshot = null
@@ -5716,17 +5834,29 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     const threadId = selectedThreadId.value
     const message = queuedMessagesByThreadId.value[threadId]?.find(row => row.id === messageId)
     if (!message) return
+    const showDelivery = type === 'steer' || message.delivery?.mode === 'steer'
+    const previousTurnId = activeTurnIdByThreadId.value[threadId]
+    const ordinal = (persistedMessagesByThreadId.value[threadId] ?? []).filter(row => row.role === 'user' && row.turnId === previousTurnId).length
+      + conversationDeliveries.rows.value.filter(row => row.threadId === threadId && row.status === 'accepted' && row.turnId === previousTurnId).length
+    if (type === 'steer') conversationDeliveries.begin(threadId, message, ordinal, true, previousTurnId)
     try {
-      const previousTurnId = activeTurnIdByThreadId.value[threadId]
-      const ordinal = (persistedMessagesByThreadId.value[threadId] ?? []).filter(row => row.role === 'user' && row.turnId === previousTurnId).length
       const result = await commitQueueOperation({ type, threadId, messageId, revision: message.delivery?.revision })
       if (result.delivered) {
-        appendOptimisticUserMessage(threadId, message.text, message.imageUrls, message.skills, message.fileAttachments,
-          { ...result.delivered, userMessageOrdinal: result.delivered.turnId === previousTurnId ? ordinal : 0 })
+        if (showDelivery) {
+          conversationDeliveries.patch(messageId, { status: 'accepted', turnId: result.delivered.turnId,
+            userMessageOrdinal: result.delivered.turnId === previousTurnId ? ordinal : 0 })
+          conversationDeliveries.observe(threadId, persistedMessagesByThreadId.value[threadId] ?? [])
+        } else {
+          appendOptimisticUserMessage(threadId, message.text, message.imageUrls, message.skills, message.fileAttachments,
+            { ...result.delivered, userMessageOrdinal: result.delivered.turnId === previousTurnId ? ordinal : 0 })
+        }
         markThreadHistoryDirty(threadId)
         scheduleDelayedTurnSync(threadId)
       }
-    } catch {
+    } catch (cause) {
+      if (showDelivery && conversationDeliveries.rows.value.find(row => row.id === messageId)?.status === 'submitting') {
+        conversationDeliveries.patch(messageId, { status: 'unknown', error: String(cause) })
+      }
       void refreshQueueState().catch(() => {})
     }
   }
@@ -5815,6 +5945,7 @@ export function useDesktopState(options: { isThreadVisible?: (threadId: string) 
     interruptSelectedThreadTurn,
     selectedThreadQueuedMessages,
     selectedThreadQueueError,
+    queueStateError,
     removeQueuedMessage,
     beginQueuedMessageEdit,
     updateQueuedMessage,
