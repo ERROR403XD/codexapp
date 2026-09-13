@@ -123,7 +123,7 @@
           </template>
           <div v-else class="thread-composer-file-mention-empty">{{ t('No matching files') }}</div>
         </div>
-        <ComposerCommandPicker v-if="commandPicker.visible.value" :commands="commandPicker.results.value" :selected-index="commandPicker.selectedIndex.value" :anchor="inputRef" :list-id="commandListId" @choose="commandPicker.choose" @dismiss="commandPicker.dismiss" />
+        <ComposerCommandPicker v-if="commandPicker.visible.value" :commands="commandPicker.results.value" :selected-index="commandPicker.selectedIndex.value" :anchor="inputRef" :expanded="isComposerExpanded" :list-id="commandListId" @choose="commandPicker.choose" @dismiss="commandPicker.dismiss" />
         <textarea
           ref="inputRef"
           v-model="draft"
@@ -140,6 +140,7 @@
           @click="updateCommandPicker()"
           @keyup="onComposerCursorKeyup"
           @select="updateCommandPicker()"
+          @beforeinput="onBeforeComposerInput"
           @input="onInputChange"
           @keydown="onInputKeydown"
           @paste="onInputPaste"
@@ -366,6 +367,13 @@
       :disabled="isInteractionDisabled"
       @change="onFolderPickerChange"
     />
+    <div class="thread-composer-draft-status" :class="{ 'is-error': draftSaveStatus === 'failed' }" role="status">
+      <template v-if="draftSaveStatus === 'saved'">{{ t('已保存') }}</template>
+      <template v-else-if="draftSaveStatus === 'failed'">
+        <span>{{ t(draftCopyFailed ? '复制失败，请选中文本复制。' : '保存失败') }}</span>
+        <button type="button" @click="copyFailedDraft">{{ t('复制草稿') }}</button>
+      </template>
+    </div>
   </form>
 </template>
 
@@ -505,6 +513,8 @@ const PASTED_TEXT_FILE_THRESHOLD = 2000
 const PROMPT_OPTION_PREFIX = 'prompt:'
 
 const draft = ref('')
+const draftSaveStatus = ref<'saved' | 'failed' | ''>('')
+const draftCopyFailed = ref(false)
 const selectedImages = ref<SelectedImage[]>([])
 const selectedSkills = ref<SkillItem[]>([])
 const savedPrompts = ref<ComposerPromptInfo[]>([])
@@ -608,11 +618,16 @@ const commandEntries = computed(() => buildComposerCommands(props.skills ?? [], 
 const commandPicker = useComposerCommandPicker(commandEntries, applyComposerCommand)
 let isComposingInput = false
 let pastedInput = false
+let commandOpeningAllowed = false
 let commandContext: { token: SlashToken; draft: string; menu: 'model' | 'skills' } | null = null
-function updateCommandPicker(paste = false) {
+function onBeforeComposerInput(event: Event): void {
+  const input = event as InputEvent
+  commandOpeningAllowed = draft.value === '' && input.data === '/' && input.inputType === 'insertText' && !input.isComposing
+}
+function updateCommandPicker(paste = false, allowOpening = false) {
   const input = inputRef.value
   if (!input || isComposingInput || isInteractionDisabled.value) { commandPicker.dismiss(); return }
-  commandPicker.update(draft.value, input.selectionStart, input.selectionEnd, paste)
+  commandPicker.update(draft.value, input.selectionStart, input.selectionEnd, paste, allowOpening)
   if (commandPicker.visible.value) {
     closeFileMention(); isAttachMenuOpen.value = false
     commandModelRef.value?.close(); commandSkillsRef.value?.close()
@@ -1022,11 +1037,26 @@ function persistDraftForThread(threadId: string, payload: ComposerDraftPayload):
       || payload.skills.length > 0
     if (hasContent) {
       window.localStorage.setItem(getDraftStorageKey(normalizedThreadId), JSON.stringify(payload))
+      draftSaveStatus.value = 'saved'
+      draftCopyFailed.value = false
       return
     }
     window.localStorage.removeItem(getDraftStorageKey(normalizedThreadId))
+    draftSaveStatus.value = ''
+    draftCopyFailed.value = false
   } catch {
-    // Ignore localStorage failures (quota/private mode).
+    draftSaveStatus.value = 'failed'
+  }
+}
+
+async function copyFailedDraft(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(draft.value)
+    draftCopyFailed.value = false
+  } catch {
+    draftCopyFailed.value = true
+    inputRef.value?.focus()
+    inputRef.value?.select()
   }
 }
 
@@ -1491,7 +1521,8 @@ function onInputChange(event?: Event): void {
 
   if (isComposingInput || (event as InputEvent)?.isComposing) return
   updateFileMentionState()
-  updateCommandPicker(pastedInput || (event as InputEvent)?.inputType === 'insertFromPaste')
+  updateCommandPicker(pastedInput || (event as InputEvent)?.inputType === 'insertFromPaste', commandOpeningAllowed)
+  commandOpeningAllowed = false
   pastedInput = false
 }
 
@@ -1801,6 +1832,8 @@ watch(
       persistDraftForThread(lastActiveThreadId, getCurrentDraftPayload())
     }
     clearDraftState()
+    draftSaveStatus.value = ''
+    draftCopyFailed.value = false
     const restored = loadPersistedDraftForThread(nextThreadId)
     if (restored) {
       replaceDraftState(restored)

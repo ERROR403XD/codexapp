@@ -35,7 +35,7 @@
           >
             <template #left>
               <span class="thread-left-stack">
-                <span v-if="shouldShowThreadIndicator(thread)" class="thread-status-indicator" :data-state="getThreadState(thread)" />
+                <span v-if="shouldShowThreadIndicator(thread)" class="thread-status-indicator" :data-state="getThreadState(thread)" :title="threadIndicatorTitle(thread)" />
                 <button
                   class="thread-delete-button"
                   type="button"
@@ -178,7 +178,7 @@
       <template v-if="isProjectsSectionExpanded || isSearchActive">
       <p v-if="projectAutomationActionError" class="thread-tree-action-error">{{ t(projectAutomationActionError) }}</p>
 
-      <p v-if="isSearchActive && searchState !== 'loading' && searchState !== 'error' && filteredGroups.length === 0 && globalThreads.length === 0 && pinnedThreads.length === 0" class="thread-tree-no-results">{{ t('No matching threads') }}</p>
+      <p v-if="(isSearchActive || isStatusFilterActive) && !filterLoading && searchState !== 'loading' && searchState !== 'error' && filteredGroups.length === 0 && globalThreads.length === 0 && pinnedThreads.length === 0" class="thread-tree-no-results">{{ t('No matching threads') }}</p>
 
       <p v-else-if="isLoading && groups.length === 0" class="thread-tree-loading">{{ t('Loading threads...') }}</p>
 
@@ -204,7 +204,7 @@
               <span
                 v-if="shouldShowThreadIndicator(thread)"
                 class="thread-status-indicator"
-                :data-state="getThreadState(thread)"
+                :data-state="getThreadState(thread)" :title="threadIndicatorTitle(thread)"
               />
               <button
                 class="thread-delete-button"
@@ -289,7 +289,8 @@
             <template #left>
               <span class="project-icon-stack">
                 <span class="project-icon-folder">
-                  <IconTablerFolder v-if="isCollapsed(group.projectName)" class="thread-icon" />
+                  <IconProjectOrganization v-if="isVirtualProjectId(group.projectName)" :expanded="!isCollapsed(group.projectName)" class="thread-icon" />
+                  <IconTablerFolder v-else-if="isCollapsed(group.projectName)" class="thread-icon" />
                   <IconTablerFolderOpen v-else class="thread-icon" />
                 </span>
                 <span class="project-icon-chevron">
@@ -400,7 +401,7 @@
                     <span
                       v-if="shouldShowThreadIndicator(thread)"
                       class="thread-status-indicator"
-                      :data-state="getThreadState(thread)"
+                      :data-state="getThreadState(thread)" :title="threadIndicatorTitle(thread)"
                     />
                     <button
                       class="thread-delete-button"
@@ -460,7 +461,7 @@
             </li>
           </ul>
 
-          <SidebarMenuRow v-else as="p" class="project-empty-row">
+          <SidebarMenuRow v-else-if="!isCollapsed(group.projectName)" as="p" class="project-empty-row">
             <template #left>
               <span class="project-empty-spacer" />
             </template>
@@ -531,7 +532,7 @@
                 <span
                   v-if="shouldShowThreadIndicator(thread)"
                   class="thread-status-indicator"
-                  :data-state="getThreadState(thread)"
+                  :data-state="getThreadState(thread)" :title="threadIndicatorTitle(thread)"
                 />
                 <button
                   class="thread-delete-button"
@@ -610,6 +611,8 @@
         :data-open-direction="getThreadMenuDirection(openThreadMenuThread.id)"
         @click.stop
       >
+        <button v-if="interruptions?.[openThreadMenuThread.id]?.length" class="thread-menu-item" type="button" :disabled="ignoringProblems" @click="emit('ignore-thread-problems', openThreadMenuThread.id)">{{ t('忽略全部问题') }}</button>
+        <p v-if="interruptionError" class="sidebar-filter-error" role="alert">{{ t(interruptionError) }}</p>
         <button class="thread-menu-item" type="button" @click="emit('toggle-quota-resume', openThreadMenuThread.id)">{{ t(quotaResumeMarks?.[openThreadMenuThread.id] ? '取消额度恢复续跑' : '额度恢复后继续') }}</button>
         <button class="thread-menu-item" type="button" @click="openAutomationDialog(openThreadMenuThread.id)">
           {{ threadHasAutomation(openThreadMenuThread.id) ? t('Manage automations…') : t('Add automation…') }}
@@ -623,6 +626,7 @@
         <button class="thread-menu-item" type="button" @click="onForkThread(openThreadMenuThread.id)">
           {{ t('Create chat fork') }}
         </button>
+        <button v-if="isProjectlessChatPath(openThreadMenuThread.cwd) && projectMoveOptions.length > 1" class="thread-menu-item" type="button" @click="openMoveProjectDialog(openThreadMenuThread)">{{ t('移动到项目') }}</button>
         <button class="thread-menu-item" type="button" @click="onTogglePinFromMenu(openThreadMenuThread.id)">
           {{ isPinned(openThreadMenuThread.id) ? t('Unpin thread') : t('Pin thread') }}
         </button>
@@ -779,14 +783,18 @@
               </AppButton>
             </div>
 
-            <div v-if="automationScheduleDraft.mode === 'daily'" class="automation-schedule-row">
-              <span class="automation-schedule-copy">{{ t('Run every day at') }}</span>
-              <input
-                v-model="automationScheduleDraft.dailyTime"
-                class="automation-schedule-time"
-                type="time"
-                @input="syncAutomationRruleFromScheduleDraft"
-              />
+            <div v-if="automationScheduleDraft.mode === 'daily'" class="automation-daily-times">
+              <div class="activation-times-heading">
+                <span>{{ t('Run every day at') }}</span>
+                <AppButton :disabled="automationScheduleDraft.dailyTimes.length >= MAX_DAILY_TIMES" @click="addAutomationDailyTime">{{ t('添加时间') }}</AppButton>
+              </div>
+              <div class="activation-time-list">
+                <p v-if="!automationScheduleDraft.dailyTimes.length">{{ t('尚未添加时间') }}</p>
+                <div v-for="(_, index) in automationScheduleDraft.dailyTimes" :key="index" class="activation-time-row">
+                  <AppTimeInput :model-value="automationScheduleDraft.dailyTimes[index] || ''" :aria-label="t('Run every day at') + ` ${index + 1}`" @update:model-value="automationScheduleDraft.dailyTimes[index] = $event" @change="syncAutomationRruleFromScheduleDraft" />
+                  <AppButton @click="removeAutomationDailyTime(index)">{{ t('移除') }}</AppButton>
+                </div>
+              </div>
             </div>
 
             <div v-else-if="automationScheduleDraft.mode === 'interval'" class="automation-schedule-row">
@@ -808,11 +816,11 @@
               />
             </div>
 
-            <input
+            <textarea
               v-if="automationScheduleDraft.mode === 'advanced'"
               v-model="automationDraft.rrule"
               class="rename-thread-input"
-              type="text"
+              rows="3"
               placeholder="FREQ=DAILY;BYHOUR=9;BYMINUTE=0"
               @input="syncAutomationScheduleDraftFromRrule"
             />
@@ -831,7 +839,6 @@
           </div>
 
           <p v-if="automationDialogError" class="rename-thread-subtitle automation-thread-error">{{ t(automationDialogError) }}</p>
-          <p v-else-if="automationDialogNotice" class="rename-thread-subtitle automation-thread-notice">{{ t(automationDialogNotice) }}</p>
       <template #footer>
           <div class="rename-thread-actions">
             <AppButton
@@ -861,13 +868,23 @@
           </div>
       </template>
     </AppDialog>
+    <AppDialog :open="Boolean(projectMoveThread)" :title="t('移动到项目')" size="compact" @close="projectMoveThread = null">
+      <AppSelect v-model="projectMoveTarget" :options="projectMoveOptions" :enable-search="true" :search-placeholder="t('Search projects')" />
+      <template #footer>
+        <AppButton @click="projectMoveThread = null">{{ t('Cancel') }}</AppButton>
+        <AppButton @click="submitMoveProject">{{ t('Save') }}</AppButton>
+      </template>
+    </AppDialog>
   </section>
 </template>
 
 <script setup lang="ts">
+import { isVirtualProjectId } from '../../projectOrganization'
+import IconProjectOrganization from '../icons/IconProjectOrganization.vue'
+import { notifyOperation } from '../../composables/useOperationToast'
+import { matchesSidebarThreadFilter, type SidebarThreadFilter } from '../../sidebarThreadFilter'
 import AppSwitch from '../common/AppSwitch.vue'
 import { createThreadMatcher } from '../../threadSearchMatch'
-import { useTransientNotice } from '../../composables/useTransientNotice'
 import { accountDisplayName } from '../../accountDisplay'
 import { isOverlayEventInside } from '../../composables/overlayEvents'
 import { displayTimeZone, browserTimeZone, formatLocalDateTime } from '../../dateTime'
@@ -905,13 +922,24 @@ import IconTablerTrash from '../icons/IconTablerTrash.vue'
 import { useUiLanguage } from '../../composables/useUiLanguage'
 import { useFeedbackDiagnostics } from '../../composables/useFeedbackDiagnostics'
 import { getPathLeafName, getPathParent, isAbsoluteLikePath, isProjectlessChatPath } from '../../pathUtils.js'
+import AppTimeInput from '../common/AppTimeInput.vue'
+import { MAX_DAILY_TIMES, normalizeDailyTimes, buildDailyTimesRule, readDailyTimesRule } from '../../automationDailyTimes'
 import AppSelect from '../common/AppSelect.vue'
 import { normalizeModelCapability, reasoningUnavailable, fastModeControl, effortOptions, modelSettingsProblem, type ModelCapability } from '../../modelCapabilities'
 import SidebarMenuRow from './SidebarMenuRow.vue'
 import { reconcilePinnedThreadIds } from './pinnedThreadUtils'
+import { threadInterruptionDot as problemDot, type ThreadInterruptionSnapshot, type ThreadInterruption } from '../../threadInterruption'
 
 const props = defineProps<{
   groups: UiProjectGroup[]
+  statusFilter?: SidebarThreadFilter
+  retainedThreadId?: string
+  activeRetainedIds?: ReadonlySet<string>
+  interruptions?: ThreadInterruptionSnapshot
+  ignoringProblems?: boolean
+  interruptionError?: string
+  quotaInterrupted?: Record<string, boolean | null>
+  filterLoading?: boolean
   accounts?: { storageId: string; alias?: string; email: string | null; accountId: string }[]
   models?: string[]
   modelCapabilities?: ModelCapability[]
@@ -937,7 +965,9 @@ const { t } = useUiLanguage()
 const { recordVisibleFailure } = useFeedbackDiagnostics()
 
 const emit = defineEmits<{
+  'move-conversation-project': [payload: { cwd: string; projectId: string | null }]
   'toggle-quota-resume': [threadId: string]
+  'ignore-thread-problems': [threadId: string]
   select: [threadId: string]
   archive: [threadId: string]
   'start-new-thread': [projectName: string]
@@ -955,6 +985,23 @@ const emit = defineEmits<{
   'start-new-chat': []
   'automations-changed': []
 }>()
+
+const projectMoveThread = ref<UiThread | null>(null)
+const projectMoveTarget = ref('')
+const projectMoveOptions = computed(() => [
+  { value: '', label: t('Projectless') },
+  ...props.groups.filter(group => isVirtualProjectId(group.projectName)).map(group => ({ value: group.projectName, label: props.projectDisplayNameById[group.projectName] || group.projectName })),
+])
+function openMoveProjectDialog(thread: UiThread): void {
+  projectMoveThread.value = thread
+  projectMoveTarget.value = isVirtualProjectId(thread.projectName) ? thread.projectName : ''
+  closeThreadMenu()
+}
+function submitMoveProject(): void {
+  if (!projectMoveThread.value) return
+  emit('move-conversation-project', { cwd: projectMoveThread.value.cwd, projectId: projectMoveTarget.value || null })
+  projectMoveThread.value = null
+}
 
 type PendingProjectDrag = {
   projectName: string
@@ -993,7 +1040,7 @@ type AutomationTargetMode = 'thread' | 'project'
 
 type AutomationScheduleDraft = {
   mode: AutomationScheduleMode
-  dailyTime: string
+  dailyTimes: string[]
   interval: number
   intervalUnit: AutomationIntervalUnit
 }
@@ -1040,7 +1087,6 @@ const automationTargetPickerVisible = ref(false)
 const automationTargetMode = ref<AutomationTargetMode>('thread')
 const automationTargetValue = ref('')
 const automationDialogError = ref('')
-const automationDialogNotice = useTransientNotice()
 const projectAutomationActionError = ref('')
 const isSavingAutomation = ref(false)
 const isRunningAutomation = ref(false)
@@ -1094,7 +1140,7 @@ const automationFastControl = computed(() => fastModeControl(automationModelCapa
 const automationEffortOptions = computed(() => effortOptions(automationModelCapability.value, automationDraft.value.reasoningEffort))
 const automationScheduleDraft = ref<AutomationScheduleDraft>({
   mode: 'daily',
-  dailyTime: '09:00',
+  dailyTimes: ['09:00'],
   interval: 1,
   intervalUnit: 'hours',
 })
@@ -1286,6 +1332,12 @@ watch(chatSortMode, (value) => {
 
 watch([isPinnedSectionExpanded, isProjectsSectionExpanded, isChatsSectionExpanded], persistSectionExpansionState)
 
+const isStatusFilterActive = computed(() => !!props.statusFilter && props.statusFilter !== 'all')
+
+function threadMatchesStatus(thread: UiThread): boolean {
+  return matchesSidebarThreadFilter(thread, props.statusFilter || 'all', props.retainedThreadId || '', props.quotaInterrupted || {}, props.activeRetainedIds)
+}
+
 const normalizedSearchQuery = computed(() => props.searchQuery.trim().toLowerCase())
 
 const isSearchActive = computed(() => normalizedSearchQuery.value.length > 0)
@@ -1305,6 +1357,7 @@ const optimisticallyArchivedThreadIdSet = computed(() => new Set(optimisticallyA
 
 function threadMatchesSearch(thread: UiThread): boolean {
   if (optimisticallyArchivedThreadIdSet.value.has(thread.id)) return false
+  if (!threadMatchesStatus(thread)) return false
   if (!isSearchActive.value) return true
   if (matchedThreadIdSet.value) {
     return matchedThreadIdSet.value.has(thread.id)
@@ -1314,9 +1367,9 @@ function threadMatchesSearch(thread: UiThread): boolean {
 
 const filteredGroups = computed<UiProjectGroup[]>(() => {
   return props.groups.flatMap((group) => {
-    const threads = group.threads.filter((thread) => !isProjectlessChatPath(thread.cwd) && threadMatchesSearch(thread)).sort(compareSearchRank)
+    const threads = group.threads.filter((thread) => (isVirtualProjectId(group.projectName) || !isProjectlessChatPath(thread.cwd)) && threadMatchesSearch(thread)).sort(compareSearchRank)
     if (threads.length > 0) return [{ ...group, threads }]
-    return !isSearchActive.value && group.threads.length === 0 ? [{ ...group, threads }] : []
+    return !isSearchActive.value && !isStatusFilterActive.value && group.threads.length === 0 ? [{ ...group, threads }] : []
   }).sort((first, second) => isSearchActive.value ? compareSearchRank(first.threads[0]!, second.threads[0]!) : 0)
 })
 
@@ -1341,7 +1394,7 @@ const globalThreads = computed<UiThread[]>(() => {
 })
 
 const chatThreads = computed(() => {
-  const rows = globalThreads.value.filter((thread) => isProjectlessChatPath(thread.cwd))
+  const rows = globalThreads.value.filter((thread) => !isVirtualProjectId(thread.projectName) && isProjectlessChatPath(thread.cwd))
   const timestampKey = chatSortMode.value === 'created' ? 'createdAtIso' : 'updatedAtIso'
   return rows
     .sort((first, second) => {
@@ -1466,7 +1519,7 @@ const threadProjectNameById = computed(() => {
 const unpinnedThreadsByProjectName = computed(() => {
   const map = new Map<string, UiThread[]>()
   for (const group of props.groups) {
-    const rows = group.threads.filter((thread) => !pinnedThreadIdSet.value.has(thread.id) && !optimisticallyArchivedThreadIdSet.value.has(thread.id))
+    const rows = group.threads.filter((thread) => !pinnedThreadIdSet.value.has(thread.id) && !optimisticallyArchivedThreadIdSet.value.has(thread.id) && threadMatchesStatus(thread))
     map.set(group.projectName, rows)
   }
   return map
@@ -1518,7 +1571,7 @@ const projectedDropProjectIndex = computed<number | null>(() => {
 })
 
 const layoutProjectOrder = computed<string[]>(() => {
-  const sourceGroups = isSearchActive.value ? filteredGroups.value : props.groups
+  const sourceGroups = isSearchActive.value || isStatusFilterActive.value ? filteredGroups.value : props.groups
   const names = sourceGroups.map((group) => group.projectName)
   const drag = activeProjectDrag.value
   const projectedIndex = projectedDropProjectIndex.value
@@ -1657,13 +1710,6 @@ function parsePositiveInteger(value: unknown, fallback: number): number {
   return Math.max(1, Math.floor(parsed))
 }
 
-function buildDailyRrule(time: string): string {
-  const [rawHour, rawMinute] = time.split(':')
-  const hour = Math.min(23, Math.max(0, Number(rawHour) || 0))
-  const minute = Math.min(59, Math.max(0, Number(rawMinute) || 0))
-  return `FREQ=DAILY;BYHOUR=${hour};BYMINUTE=${minute}`
-}
-
 function buildIntervalRrule(interval: number, unit: AutomationIntervalUnit): string {
   const normalizedInterval = parsePositiveInteger(interval, 1)
   if (unit === 'minutes') return `FREQ=MINUTELY;INTERVAL=${normalizedInterval}`
@@ -1689,27 +1735,19 @@ function createScheduleDraftFromRrule(rrule: string): AutomationScheduleDraft {
   const parts = parseRruleParts(rrule)
   const frequency = parts.FREQ?.toUpperCase()
   const interval = parsePositiveInteger(parts.INTERVAL, 1)
-  if (frequency === 'DAILY' && parts.BYHOUR !== undefined && parts.BYMINUTE !== undefined && interval === 1) {
-    const hour = Math.min(23, Math.max(0, Number(parts.BYHOUR) || 0))
-    const minute = Math.min(59, Math.max(0, Number(parts.BYMINUTE) || 0))
-    return {
-      mode: 'daily',
-      dailyTime: `${padRruleNumber(hour)}:${padRruleNumber(minute)}`,
-      interval: 1,
-      intervalUnit: 'hours',
-    }
-  }
-  if (frequency === 'MINUTELY' || frequency === 'HOURLY' || (frequency === 'DAILY' && parts.INTERVAL !== undefined)) {
+  const dailyTimes = readDailyTimesRule(rrule)
+  if (dailyTimes) return { mode: 'daily', dailyTimes, interval: 1, intervalUnit: 'hours' }
+  if (!rrule.includes('\n') && Object.keys(parts).every(key => ['FREQ', 'INTERVAL'].includes(key)) && (frequency === 'MINUTELY' || frequency === 'HOURLY' || (frequency === 'DAILY' && parts.INTERVAL !== undefined))) {
     return {
       mode: 'interval',
-      dailyTime: '09:00',
+      dailyTimes: ['09:00'],
       interval,
       intervalUnit: frequency === 'MINUTELY' ? 'minutes' : frequency === 'HOURLY' ? 'hours' : 'days',
     }
   }
   return {
     mode: 'advanced',
-    dailyTime: '09:00',
+    dailyTimes: ['09:00'],
     interval: 1,
     intervalUnit: 'hours',
   }
@@ -1719,11 +1757,8 @@ function describeAutomationSchedule(rrule: string): string {
   const parts = parseRruleParts(rrule)
   const frequency = parts.FREQ?.toUpperCase()
   const interval = parsePositiveInteger(parts.INTERVAL, 1)
-  if (frequency === 'DAILY' && parts.BYHOUR !== undefined && parts.BYMINUTE !== undefined && interval === 1) {
-    const hour = Math.min(23, Math.max(0, Number(parts.BYHOUR) || 0))
-    const minute = Math.min(59, Math.max(0, Number(parts.BYMINUTE) || 0))
-    return t('RRULE: {rrule} · runs daily at {time}', { rrule, time: `${padRruleNumber(hour)}:${padRruleNumber(minute)}` })
-  }
+  const dailyTimes = readDailyTimesRule(rrule)
+  if (dailyTimes) return `${t('Run every day at')} ${dailyTimes.join('、')}`
   if (frequency === 'MINUTELY') return t('RRULE: {rrule} · runs every {count} minutes', { rrule, count: interval })
   if (frequency === 'HOURLY') return t('RRULE: {rrule} · runs every {count} hours', { rrule, count: interval })
   if (frequency === 'DAILY' && parts.INTERVAL !== undefined) return t('RRULE: {rrule} · runs every {count} days', { rrule, count: interval })
@@ -1733,10 +1768,33 @@ function describeAutomationSchedule(rrule: string): string {
 function syncAutomationRruleFromScheduleDraft(): void {
   const draft = automationScheduleDraft.value
   if (draft.mode === 'daily') {
-    automationDraft.value.rrule = buildDailyRrule(draft.dailyTime)
+    try {
+      automationDraft.value.rrule = buildDailyTimesRule(draft.dailyTimes)
+      automationDialogError.value = ''
+    } catch (cause) {
+      automationDialogError.value = cause instanceof Error ? cause.message : '时间格式应为 HH:mm'
+    }
   } else if (draft.mode === 'interval') {
     automationDraft.value.rrule = buildIntervalRrule(draft.interval, draft.intervalUnit)
   }
+}
+
+function addAutomationDailyTime(): void {
+  const times = automationScheduleDraft.value.dailyTimes
+  if (times.length >= MAX_DAILY_TIMES) return
+  for (let hour = 8; hour < 32; hour++) {
+    const time = `${String(hour % 24).padStart(2, '0')}:00`
+    if (!times.includes(time)) {
+      times.push(time)
+      syncAutomationRruleFromScheduleDraft()
+      return
+    }
+  }
+}
+
+function removeAutomationDailyTime(index: number): void {
+  automationScheduleDraft.value.dailyTimes.splice(index, 1)
+  syncAutomationRruleFromScheduleDraft()
 }
 
 function onAutomationIntervalUnitChange(value: string): void {
@@ -1915,7 +1973,7 @@ function openAutomationDialog(threadId: string): void {
   automationDialogProjectName.value = ''
   automationTargetPickerVisible.value = false
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   const existing = automationByThreadId.value[threadId]?.[0]
   if (existing) {
     selectAutomationForEditing(existing.id)
@@ -1934,7 +1992,7 @@ function openProjectAutomationDialog(projectName: string): void {
     automationDialogProjectName.value = ''
     automationTargetPickerVisible.value = false
     automationDialogError.value = 'Project automation requires a resolved absolute project path.'
-    automationDialogNotice.value = ''
+
     automationDialogVisible.value = true
     closeProjectMenu()
     return
@@ -1944,7 +2002,7 @@ function openProjectAutomationDialog(projectName: string): void {
   automationDialogProjectName.value = projectCwd
   automationTargetPickerVisible.value = false
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   const existing = automationByProjectName.value[projectCwd]?.[0]
   if (existing) {
     selectAutomationForEditing(existing.id)
@@ -1965,7 +2023,7 @@ function openAutomationEditorFromPanel(payload: {
   automationDialogProjectName.value = payload.scope === 'project' ? payload.target : ''
   automationTargetPickerVisible.value = false
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   if (payload.scope === 'project') {
     automationByProjectName.value = updateAutomationForProject(automationByProjectName.value, payload.target, payload.automation)
   } else {
@@ -1985,7 +2043,7 @@ function openAutomationCreatorFromPanel(): void {
   automationDialogThreadId.value = ''
   automationDialogProjectName.value = ''
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   startNewAutomationDraft()
   automationDialogVisible.value = true
   closeProjectMenu()
@@ -2004,7 +2062,7 @@ function startNewAutomationDraft(): void {
   automationDialogAutomationId.value = ''
   automationDialogMode.value = 'create'
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   automationDraft.value = {
     name: automationDialogScope.value === 'project' ? 'Project automation' : 'Thread automation',
     prompt: '',
@@ -2020,7 +2078,7 @@ function selectAutomationForEditing(automationId: string): void {
   automationDialogAutomationId.value = existing.id
   automationDialogMode.value = 'edit'
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   automationTimezone.value = existing.timezone ?? ''
   automationDraft.value = {
     name: existing.name,
@@ -2040,7 +2098,7 @@ function closeAutomationDialog(): void {
   automationDialogProjectName.value = ''
   automationDialogAutomationId.value = ''
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   isSavingAutomation.value = false
   isRunningAutomation.value = false
 }
@@ -2103,8 +2161,9 @@ async function submitAutomationDialog(): Promise<void> {
   let projectName = automationDialogProjectName.value
   isSavingAutomation.value = true
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   try {
+    if (automationScheduleDraft.value.mode === 'daily') normalizeDailyTimes(automationScheduleDraft.value.dailyTimes)
     syncAutomationRruleFromScheduleDraft()
     if (automationTargetPickerVisible.value && automationDialogMode.value === 'create') {
       if (automationTargetMode.value === 'thread') {
@@ -2151,10 +2210,10 @@ async function submitAutomationDialog(): Promise<void> {
     }
     emit('automations-changed')
     selectAutomationForEditing(saved.id)
-    automationDialogNotice.value = 'Automation saved.'
+    notifyOperation('自动化已保存', 'success')
     isSavingAutomation.value = false
   } catch (error) {
-    automationDialogError.value = error instanceof Error ? error.message : 'Failed to save automation'
+    notifyOperation(error instanceof Error ? error.message : 'Failed to save automation')
     isSavingAutomation.value = false
   }
 }
@@ -2168,7 +2227,7 @@ async function onDeleteAutomationFromDialog(): Promise<void> {
   if (automationDialogScope.value === 'project' && !projectName) return
   isSavingAutomation.value = true
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   try {
     if (automationDialogScope.value === 'project') {
       await deleteProjectAutomation(projectName, automationId)
@@ -2180,8 +2239,9 @@ async function onDeleteAutomationFromDialog(): Promise<void> {
     emit('automations-changed')
     isSavingAutomation.value = false
     closeAutomationDialog()
+    notifyOperation('自动化已移除', 'success')
   } catch (error) {
-    automationDialogError.value = error instanceof Error ? error.message : 'Failed to remove automation'
+    notifyOperation(error instanceof Error ? error.message : 'Failed to remove automation')
     isSavingAutomation.value = false
   }
 }
@@ -2193,12 +2253,12 @@ async function onRunAutomationFromDialog(): Promise<void> {
   if (!target || !automationId || isRunningAutomation.value) return
   isRunningAutomation.value = true
   automationDialogError.value = ''
-  automationDialogNotice.value = ''
+
   try {
     await runAutomationNow({ automationId, target, kind: automationDialogScope.value === 'project' ? 'cron' : 'heartbeat', requestId: createAutomationRequestId() })
-    automationDialogNotice.value = 'Automation run queued.'
+    notifyOperation('自动化已加入队列', 'success')
   } catch (error) {
-    automationDialogError.value = error instanceof Error ? error.message : 'Failed to run automation'
+    notifyOperation(error instanceof Error ? error.message : 'Failed to run automation')
   } finally {
     isRunningAutomation.value = false
   }
@@ -2224,6 +2284,7 @@ function isPathLikeProjectName(value: string): boolean {
 }
 
 function getProjectTooltipTitle(projectName: string): string {
+  if (isVirtualProjectId(projectName)) return getProjectDisplayName(projectName)
   return props.projectCwdByName[projectName]?.trim() || (isPathLikeProjectName(projectName) ? projectName : getProjectDisplayName(projectName))
 }
 
@@ -2241,6 +2302,7 @@ function isDuplicatePathLeafName(value: string): boolean {
 }
 
 function getProjectVisibleName(group: UiProjectGroup): string {
+  if (isVirtualProjectId(group.projectName)) return getProjectDisplayName(group.projectName)
   const customDisplayName = props.projectDisplayNameById[group.projectName]
   const displayName = getProjectDisplayName(group.projectName)
   const projectName = group.projectName
@@ -2346,7 +2408,9 @@ function onCreateProjectWorktree(projectName: string): void {
 function onRemoveProject(projectName: string): void {
   const projectCwd = getProjectAutomationKey(projectName)
   emit('remove-project', projectName)
-  if (projectCwd && projectHasAutomation(projectName)) {
+  // Removing an organization only ungroups conversations. Its task definition
+  // and execution identity must survive just like the underlying working data.
+  if (!isVirtualProjectId(projectName) && projectCwd && projectHasAutomation(projectName)) {
     projectAutomationActionError.value = ''
     const previousAutomationByProjectName = automationByProjectName.value
     automationByProjectName.value = omitAutomationProject(automationByProjectName.value, projectCwd)
@@ -2371,6 +2435,7 @@ function onRemoveProject(projectName: string): void {
 }
 
 function getProjectAutomationKey(projectName: string): string {
+  if (isVirtualProjectId(projectName)) return projectName
   const projectCwd = props.projectCwdByName[projectName]?.trim() ?? ''
   return isAbsoluteLikePath(projectCwd) ? projectCwd : ''
 }
@@ -2700,7 +2765,7 @@ function setProjectGroupRef(projectName: string, element: Element | ComponentPub
 
 function onProjectHandleMouseDown(event: MouseEvent, projectName: string): void {
   if (event.button !== 0) return
-  if (isSearchActive.value) return
+  if (isSearchActive.value || isStatusFilterActive.value) return
   if (pendingProjectDrag.value || activeProjectDrag.value) return
 
   const fromIndex = props.groups.findIndex((group) => group.projectName === projectName)
@@ -2948,17 +3013,29 @@ function hasThreads(group: UiProjectGroup): boolean {
 }
 
 function shouldShowThreadIndicator(thread: UiThread): boolean {
-  return Boolean(thread.pendingRequestState) || thread.inProgress || thread.unread
+  return Boolean(thread.pendingRequestState) || thread.inProgress || thread.unread || Boolean(threadInterruptionDot(thread))
 }
 
 function threadRequestLabel(thread: UiThread): string {
   return thread.pendingRequestState === 'approval' ? t('Awaiting approval') : t('Awaiting response')
 }
 
-function getThreadState(thread: UiThread): 'awaiting-approval' | 'awaiting-response' | 'working' | 'unread' | 'idle' {
+function threadInterruptionDot(thread: UiThread): ThreadInterruption['kind'] | undefined {
+  return problemDot(props.interruptions?.[thread.id])
+}
+
+function threadIndicatorTitle(thread: UiThread): string | undefined {
+  if (thread.inProgress || thread.pendingRequestState) return undefined
+  const kind = threadInterruptionDot(thread)
+  return kind === 'quota' ? t('额度不足') : kind === 'error' ? t('会话异常中断') : undefined
+}
+
+function getThreadState(thread: UiThread): 'awaiting-approval' | 'awaiting-response' | 'working' | 'unread' | 'idle' | ThreadInterruption['kind'] {
   if (thread.pendingRequestState === 'approval') return 'awaiting-approval'
   if (thread.pendingRequestState === 'response') return 'awaiting-response'
   if (thread.inProgress) return 'working'
+  const interruption = threadInterruptionDot(thread)
+  if (interruption) return interruption
   if (thread.unread) return 'unread'
   return 'idle'
 }
@@ -3386,7 +3463,9 @@ onBeforeUnmount(() => {
   @apply opacity-100 pointer-events-auto;
 }
 
-.thread-status-indicator[data-state='unread'] {
+.thread-status-indicator[data-state='unread'],
+.thread-status-indicator[data-state='error'],
+.thread-status-indicator[data-state='quota'] {
   width: 6.6667px;
   height: 6.6667px;
   @apply bg-blue-600;
@@ -3404,6 +3483,10 @@ onBeforeUnmount(() => {
   @apply bg-sky-500;
 }
 
+.thread-row:hover .thread-status-indicator[data-state='error'],
+.thread-row:hover .thread-status-indicator[data-state='quota'],
+.thread-row:focus-within .thread-status-indicator[data-state='error'],
+.thread-row:focus-within .thread-status-indicator[data-state='quota'],
 .thread-row:hover .thread-status-indicator[data-state='unread'],
 .thread-row:hover .thread-status-indicator[data-state='working'],
 .thread-row:hover .thread-status-indicator[data-state='awaiting-approval'],

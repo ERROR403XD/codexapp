@@ -1975,6 +1975,8 @@
   --ui-hover: #f4f4f5;
   --ui-danger: #be123c;
   --ui-danger-border: #fda4af;
+  --ui-status-error-dot: #ef4444;
+  --ui-status-quota-dot: #eab308;
   --ui-focus: #6366f1;
   --ui-radius-dialog: 16px;
   --ui-radius-popover: 12px;
@@ -2473,8 +2475,8 @@ fieldset.thread-pending-request-shell { min-width: 0; margin: 0; }
 .notification-settings .notification-check { display: flex; gap: 8px; align-items: center; }
 .notification-settings small { font-size: 11px; opacity: .75; overflow-wrap: anywhere; }
 .notification-settings textarea { width: 100%; resize: vertical; }
-.notification-hours { display: flex; flex: 1 1 136px; min-width: 0; gap: 6px; align-items: center; font-size: 12px; line-height: 20px; }
-.notification-hours .app-input { width: 56px; min-width: 0; height: 32px; flex: 1 1 56px; padding: 5px 4px; font-size: 12px; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
+.notification-hours { display: flex; flex: 0 0 auto; min-width: 0; gap: 6px; align-items: center; font-size: 12px; line-height: 20px; }
+.notification-hours .app-input { width: 96px; min-width: 96px; height: 32px; flex: 0 0 96px; padding: 5px 4px; font-size: 12px; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
 .notification-hours > span { flex: 0 0 auto; font-size: 12px; }
 
 /* 0.2.12: shared route and compact account controls. */
@@ -2498,6 +2500,11 @@ fieldset.thread-pending-request-shell { min-width: 0; margin: 0; }
 :root.dark .thread-composer-fast[aria-checked="true"] { color: #fde047; background: #422006; border-color: #facc15; box-shadow: 0 0 0 1px #facc1580, 0 0 14px #eab30855; }
 
 :root .directory-hub, :root .automations-panel, :root .api-proxy-panel, :root .settings-page { width: 100%; max-width: 1100px; margin-inline: auto; padding: 24px; box-sizing: border-box; }
+:root .automations-panel { width: calc(100% - 24px); min-width: 0; }
+:root .automations-toolbar { flex-wrap: wrap; }
+
+:root .conversation-delivery-status { margin: 4px 0 0; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
+:root .conversation-delivery-status[data-status='failed'] { color: var(--ui-danger); }
 :root .settings-section, :root .api-proxy-card, :root .directory-detail-block { border: 1px solid var(--ui-border); border-radius: var(--ui-radius-popover); background: var(--ui-surface); color: var(--ui-text); }
 :root.dark .automations-toolbar, :root.dark .automation-runtime-status { color: var(--ui-text); border-color: var(--ui-border); }
 @media (max-width: 640px) {
@@ -2700,8 +2707,8 @@ fieldset.thread-pending-request-shell { min-width: 0; margin: 0; }
 .notification-actions > .account-panel-error { flex-basis: 100%; margin: 0; }
 .settings-integration-card { min-width: 0; margin: 0; padding: 18px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-dialog); background: var(--ui-surface); }
 .settings-integration-card h3 { margin: 0; font-size: 14px; }
-.notification-quiet { display: flex; align-items: center; align-self: start; gap: 10px; padding-top: 14px; border-top: 1px solid var(--ui-divider); }
-.notification-quiet > .app-switch { flex: 0 0 auto; gap: 8px; }
+.notification-quiet { display: flex; flex-wrap: wrap; align-items: center; align-self: start; column-gap: 20px; row-gap: 10px; padding-top: 14px; border-top: 1px solid var(--ui-divider); }
+.notification-quiet > .app-switch { flex: 0 0 auto; width: auto; justify-content: flex-start; gap: 12px; }
 .notification-quiet .app-switch-label { white-space: nowrap; }
 .notification-hours .app-input:disabled { color: var(--ui-muted); opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 1000px) { .settings-integrations-grid { grid-template-columns: minmax(0, 1fr); } }
@@ -2844,3 +2851,107 @@ fieldset.thread-pending-request-shell { min-width: 0; margin: 0; }
 :root .automations-panel :is(.automations-create, .automations-refresh, .automation-edit-button, .automation-detail-edit) { height: 32px; border-radius: var(--ui-radius-control); font-size: var(--ui-font-control); line-height: 20px; }
 :root .automations-panel :is(.automations-refresh, .automation-edit-button, .automation-detail-edit) { border: 1px solid var(--ui-border); background: var(--ui-surface); color: var(--ui-text); }
 :root .automations-panel :is(.automations-refresh, .automation-edit-button, .automation-detail-edit):hover:not(:disabled) { background: var(--ui-hover); }
+
+.dismissible-notice { display: flex; align-items: flex-start; gap: 8px; color: var(--ui-danger); }
+.dismissible-notice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dismissible-notice-close { flex: none; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--ui-radius-control); background: transparent; color: inherit; font-size: 20px; cursor: pointer; }
+.dismissible-notice-close:hover { background: var(--ui-hover); }
+.dismissible-notice-close:focus-visible { outline: 2px solid var(--ui-focus); }
+.thread-composer-draft-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 18px; color: var(--ui-text); opacity: .6; font-size: 11px; }
+.thread-composer-draft-status.is-error { color: var(--ui-danger); opacity: 1; }
+
+.app-time-input { width: 104px; min-width: 0; flex: none; text-align: center; font-variant-numeric: tabular-nums; }
+.activation-time-row .app-time-input { width: 104px; }
+.app-time-input[aria-invalid="true"] { border-color: var(--ui-danger); }
+
+:root.dark .app-time-input { color-scheme: dark; }
+
+/* Status tags mask rows without changing sidebar grouping or expansion. */
+.sidebar-thread-filter { display: flex; gap: 6px; margin: 8px 8px 6px; }
+.sidebar-filter-tag {
+  flex: 1; min-width: 0; min-height: 28px; padding: 4px 8px;
+  color: var(--ui-text); background: transparent;
+  border: 1px solid var(--ui-border); border-radius: var(--ui-radius-control);
+  font-size: 12px; line-height: 18px; cursor: pointer;
+}
+.sidebar-filter-tag:hover { background: var(--ui-hover); }
+.sidebar-filter-tag.is-active { color: #fff; border-color: #fff; background: #27272a; }
+:root:not(.dark) .sidebar-filter-tag.is-active { box-shadow: 0 0 0 1px #52525b; }
+.sidebar-filter-tag:focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
+.sidebar-filter-error { margin: 4px 8px; color: var(--ui-danger); font-size: 12px; }
+.sidebar-filter-error button { text-decoration: underline; }
+
+.quota-error-ignore {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 2px 8px;
+  margin-right: 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.quota-error-ignore[aria-pressed="true"] {
+  color: var(--ui-text);
+  border-color: currentColor;
+}
+.quota-error-ignore:disabled { opacity: .5; cursor: wait; }
+
+.quota-error-ignore:focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
+
+.operation-toast-host {
+  position: fixed;
+  top: max(var(--operation-toast-top, 56px), env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  width: min(380px, calc(100vw - 32px));
+  z-index: calc(var(--ui-layer-popover) + 10);
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+.operation-toast {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-left: 3px solid var(--ui-danger);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: 0 8px 28px #0002;
+  font-size: 13px;
+  pointer-events: auto;
+}
+.operation-toast.is-success { border-left-color: #22a06b; }
+.operation-toast-icon { color: var(--ui-danger); font-weight: 600; }
+.operation-toast.is-success .operation-toast-icon { color: #22a06b; }
+.operation-toast-message { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.operation-toast button { flex: none; padding: 0 3px; color: var(--ui-text); font-size: 18px; line-height: 20px; }
+.operation-toast button:focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
+.operation-toast-progress {
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  background: var(--ui-danger);
+  opacity: .65;
+  transform-origin: left;
+  animation: operation-toast-countdown linear forwards;
+}
+.operation-toast.is-success .operation-toast-progress { background: #22a06b; }
+@keyframes operation-toast-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.operation-toast-enter-active { transition: opacity .24s ease-out, transform .24s cubic-bezier(.2,.8,.2,1); }
+.operation-toast-leave-active { position: absolute; width: 100%; transition: opacity .18s ease-in, transform .18s ease-in; }
+.operation-toast-move { transition: transform .24s cubic-bezier(.2,.8,.2,1); }
+.operation-toast-enter-from { opacity: 0; transform: translateX(12px); }
+.operation-toast-leave-to { opacity: 0; transform: translateX(8px); }
+@media (max-width: 600px) { .operation-toast-host { left: 16px; right: 16px; width: auto; } }
+@media (prefers-reduced-motion: reduce) { .operation-toast-enter-active, .operation-toast-leave-active, .operation-toast-move { transition: none; } }
+
+/* Terminal dots share the unread-dot geometry in both themes. */
+:root .thread-status-indicator[data-state="error"] { background-color: var(--ui-status-error-dot); }
+:root .thread-status-indicator[data-state="quota"] { background-color: var(--ui-status-quota-dot); }

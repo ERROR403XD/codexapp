@@ -1,5 +1,7 @@
 import { createDeliveryId } from '../delivery'
 import type { StoredQueuedMessage, ThreadQueueState } from '../threadQueue'
+import { saveConversationDelivery } from './conversationDeliveryCache'
+import type { ConversationDeliveryStatus } from '../conversationDelivery'
 
 const PREFIX = 'codexapp.delivery.v2.'
 export const DELIVERY_OUTBOX_EVENT = 'codexapp-delivery-outbox'
@@ -58,7 +60,7 @@ export async function prepareWebDelivery(endpoint: PendingWebDelivery['endpoint'
   const pending = readPendingWebDeliveries(body.threadId)
   const previous = pending.find(row => row.endpoint === endpoint && intent(row.body) === intent(body))
   if (previous) return previous
-  if (pending.length) throw new Error('此会话还有未确认的提交，请先点击“核对提交”')
+  if (pending.length) throw new Error('提交待确认，请点击“核对提交”')
   const response = await fetch('/codex-api/delivery-context')
   const payload = await response.json()
   if (!response.ok || typeof payload.data?.contextId !== 'string' || !payload.data.contextId) throw new Error(payload.error || '无法确认当前账号，消息尚未提交')
@@ -70,7 +72,7 @@ export function rememberWebDelivery(endpoint: PendingWebDelivery['endpoint'], bo
   const pending = rows.filter(row => row.body.threadId === body.threadId)
   const previous = pending.find(row => row.endpoint === endpoint && intent(row.body) === intent(body))
   if (previous) return previous
-  if (pending.length) throw new Error('此会话还有未确认的提交，请先点击“核对提交”')
+  if (pending.length) throw new Error('提交待确认，请点击“核对提交”')
   if (rows.length >= 20) throw new Error('浏览器中未确认的提交过多，请先核对已有记录')
   const id = body.message.id || createDeliveryId()
   const row: PendingWebDelivery = { id, endpoint, body: { ...body, message: { ...body.message, id } }, createdAt: Date.now() }
@@ -111,6 +113,16 @@ export function submitRememberedDelivery(row: PendingWebDelivery): Promise<WebDe
       ? result?.id === row.id && ['accepted', 'cancelled', 'queued', 'editing', 'sending', 'unknown', 'failed'].includes(result.status)
       : result?.state && typeof result.state === 'object' && !Array.isArray(result.state)
     if (!valid) throw new Error('未收到有效的提交确认，请核对提交状态')
+    if (row.body.mode === 'steer') {
+      // Preserve the acknowledged content before clearing the submission outbox.
+      // This display cache is never consulted to decide whether to submit again.
+      saveConversationDelivery({ id: row.id, threadId: row.body.threadId, message: row.body.message,
+        createdAt: row.createdAt, status: result.status as ConversationDeliveryStatus,
+        ...(typeof result.turnId === 'string' ? { turnId: result.turnId } : {}),
+        ...(typeof result.error === 'string' ? { error: result.error } : {}),
+        ...(typeof result.revision === 'number' ? { revision: result.revision } : {}),
+      })
+    }
     forgetWebDelivery(row.id)
     return payload as WebDeliveryAck
   })().finally(() => { flights.delete(row.id) })

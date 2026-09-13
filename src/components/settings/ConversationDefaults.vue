@@ -15,7 +15,7 @@ import AppSelect from '../common/AppSelect.vue'
 import AppSwitch from '../common/AppSwitch.vue'
 import { reasoningUnavailable, effortOptions, type ModelCapability } from '../../modelCapabilities'
 import { effectiveConversationChoice, type ConversationChoice } from '../../webConversationPreferences'
-const props = defineProps<{ value: ConversationChoice; remember: boolean; models: ModelCapability[]; provider: string; error: string }>()
+const props = defineProps<{ value: ConversationChoice; remember: boolean; models: ModelCapability[]; provider: string; hasAccount?: boolean; error: string }>()
 const emit = defineEmits<{ save: [value: ConversationChoice, remember: boolean] }>()
 const model = computed(() => props.models.find(row => row.id === props.value.model))
 const modelOptions = computed(() => {
@@ -25,9 +25,10 @@ const modelOptions = computed(() => {
 })
 const fastTier = computed(() => model.value?.serviceTiers?.find(row => ['priority', 'fast'].includes(row.value))?.value || '')
 const problem = computed(() => {
+  if (!props.hasAccount) return ''
   const effective = effectiveConversationChoice(props.value, props.models)
   return effective.model !== props.value.model || effective.effort !== props.value.effort || effective.tier !== props.value.tier
-    ? `当前账号使用：${effective.model} · ${effective.effort || '默认强度'}；已保存偏好不变。` : ''
+    ? `当前账号使用：${effective.model} · ${effective.effort || '默认强度'}` : ''
 })
 function save(patch: Partial<ConversationChoice>): void { emit('save', { ...props.value, ...patch }, props.remember) }
 function selectModel(id: string): void { save({ model: id, provider: props.provider, effort: '', tier: '' }) }
